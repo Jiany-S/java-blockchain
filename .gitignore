@@ -1,5 +1,39 @@
-# Ignore Gradle project-specific cache directory
-.gradle
+# === Java ===
+*.class
+*.log
+*.jar
+*.war
+*.ear
 
-# Ignore Gradle build output directory
-build
+# === Gradle ===
+.gradle/
+build/
+out/
+!gradle/wrapper/gradle-wrapper.jar
+
+# === IntelliJ IDEA ===
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# === VS Code ===
+.vscode/
+.settings/
+.classpath
+.project
+
+# === Mac / Linux / Windows system files ===
+.DS_Store
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# === Logs & temp ===
+*.tmp
+*.swp
+*.swo
+*.bak
+
+# === Testcontainers (Docker volumes, if any) ===
+docker-data/
