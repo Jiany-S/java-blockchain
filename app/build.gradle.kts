@@ -8,6 +8,7 @@
 
 plugins {
     // Apply the application plugin to add support for building a CLI application in Java.
+    java
     application
 }
 
@@ -18,6 +19,26 @@ repositories {
 
 dependencies {
     // This dependency is used by the application.
+     // --- Storage ---
+    implementation("org.rocksdb:rocksdbjni:9.6.1")      // Bundles native libs
+
+    // --- Networking ---
+    implementation("io.netty:netty-all:4.1.115.Final")
+
+    // --- Crypto ---
+    implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
+
+    // --- Observability ---
+    implementation("io.micrometer:micrometer-core:1.13.3")
+    implementation("io.micrometer:micrometer-registry-prometheus:1.13.3")
+
+    // Logging facade + backend
+    implementation("org.slf4j:slf4j-api:2.0.13")
+    runtimeOnly("ch.qos.logback:logback-classic:1.5.6")
+
+    // --- Testing ---
+    testImplementation("org.junit.jupiter:junit-jupiter:5.10.3")
+    testImplementation("org.testcontainers:junit-jupiter:1.20.1")
     implementation(libs.guava)
 }
 
@@ -38,7 +59,9 @@ java {
     }
 }
 
+tasks.test { useJUnitPlatform() }
+
 application {
     // Define the main class for the application.
-    mainClass = "io.blockchain.core.App"
+    mainClass.set("io.blockchain.core.Main")
 }
