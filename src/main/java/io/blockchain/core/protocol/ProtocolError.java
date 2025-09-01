@@ -1,0 +1,15 @@
+package io.blockchain.core.protocol;
+
+public enum ProtocolError {
+    INVALID_VERSION,
+    INVALID_CHAIN_ID,
+    INVALID_ADDRESS,
+    SAME_SENDER_RECEIVER,
+    NON_POSITIVE_AMOUNT,
+    NEGATIVE_FEE,
+    NEGATIVE_NONCE,
+    BAD_TIMESTAMP,
+    PAYLOAD_TOO_LARGE,
+    BAD_SIGNATURE_LENGTH,
+    MALFORMED_BYTES
+}
