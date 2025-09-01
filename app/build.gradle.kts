@@ -36,6 +36,9 @@ dependencies {
     implementation("org.slf4j:slf4j-api:2.0.13")
     runtimeOnly("ch.qos.logback:logback-classic:1.5.6")
 
+    // RocksDB JNI binding (native lib bundled for major OSes)
+    implementation("org.rocksdb:rocksdbjni:9.6.1")
+
     // --- Testing ---
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.3")
     testImplementation("org.testcontainers:junit-jupiter:1.20.1")
