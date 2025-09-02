@@ -7,11 +7,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Simple in-memory state.
- * - Balance and nonce default to 0 if unseen.
- * - Uses long "minor units"; watch for overflow in real code.
- */
 public final class InMemoryStateStore implements StateStore {
 
     private final Map<String, Long> balances = new HashMap<String, Long>();
@@ -36,16 +31,14 @@ public final class InMemoryStateStore implements StateStore {
         long amt    = tx.amountMinor();
         long fee    = tx.feeMinor();
 
-        // debit sender: amount + fee; bump nonce
         long fromBal = getBalance(from);
         long fromNonce = getNonce(from);
         balances.put(from, fromBal - amt - fee);
         nonces.put(from, fromNonce + 1);
 
-        // credit receiver: amount
         long toBal = getBalance(to);
         balances.put(to, toBal + amt);
-        // fees are "burned" for MVP; later send to miner
+        // fee is burned for MVP
     }
 
     @Override
@@ -55,7 +48,6 @@ public final class InMemoryStateStore implements StateStore {
         long amt    = tx.amountMinor();
         long fee    = tx.feeMinor();
 
-        // undo credits/debits
         long toBal = getBalance(to);
         balances.put(to, toBal - amt);
 
@@ -68,16 +60,18 @@ public final class InMemoryStateStore implements StateStore {
     @Override
     public synchronized void applyBlock(Block block) {
         List<Transaction> txs = block.transactions();
-        for (int i = 0; i < txs.size(); i++) {
-            applyTx(txs.get(i));
-        }
+        for (int i = 0; i < txs.size(); i++) applyTx(txs.get(i));
     }
 
     @Override
     public synchronized void revertBlock(Block block) {
         List<Transaction> txs = block.transactions();
-        for (int i = txs.size() - 1; i >= 0; i--) {
-            revertTx(txs.get(i));
-        }
+        for (int i = txs.size() - 1; i >= 0; i--) revertTx(txs.get(i));
+    }
+
+    @Override
+    public synchronized void credit(String address, long amount) {
+        long bal = getBalance(address);
+        balances.put(address, bal + amount);
     }
 }

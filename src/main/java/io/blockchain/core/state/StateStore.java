@@ -5,7 +5,6 @@ import io.blockchain.core.protocol.Transaction;
 
 /**
  * Minimal account state: balances + nonces.
- * Apply/revert blocks so fork-choice can switch heads later.
  */
 public interface StateStore {
     long getBalance(String address);
@@ -22,4 +21,7 @@ public interface StateStore {
 
     /** Revert all txs in a block (reverse order). */
     void revertBlock(Block block);
+
+    /** Credit an address (genesis funding or manual recovery). */
+    void credit(String address, long amount);
 }
