@@ -1,4 +1,4 @@
-package io.blockchain.core.protocol.messages;
+package io.blockchain.core.protocol;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;

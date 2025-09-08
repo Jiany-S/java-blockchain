@@ -47,6 +47,10 @@ public final class Node {
 
     /** Ensure genesis exists and balances are seeded. Safe to call multiple times. */
     public void start() {
+        // Always seed in-memory state for local dev (state is not persisted)
+        GenesisBuilder.seedBalances(state, config.genesisAllocations);
+
+        // Create genesis block if the chain has no head yet
         GenesisBuilder.initIfNeeded(chain, state, config.genesisAllocations);
     }
 

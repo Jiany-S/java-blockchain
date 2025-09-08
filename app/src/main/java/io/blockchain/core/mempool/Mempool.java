@@ -1,4 +1,4 @@
-package main.java.io.blockchain.core.mempool;
+package io.blockchain.core.mempool;
 
 import io.blockchain.core.protocol.Transaction;
 

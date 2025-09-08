@@ -1,4 +1,4 @@
-package io.blockchain.core.protocol.messages;
+package io.blockchain.core.protocol;
 
 import io.blockchain.core.protocol.Block;
 import io.blockchain.core.protocol.BlockCodec;
