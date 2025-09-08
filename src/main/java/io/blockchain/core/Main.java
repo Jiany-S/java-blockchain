@@ -2,40 +2,43 @@ package io.blockchain.core;
 
 import io.blockchain.core.node.Node;
 import io.blockchain.core.node.NodeConfig;
-import io.blockchain.core.rpc.RpcServer;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Optional;
-import java.util.logging.Level;
 import java.util.logging.Logger;
 
-/** Boots the node, starts HTTP, mines a few blocks. */
 public class Main {
     private static final Logger LOG = Logger.getLogger(Main.class.getName());
 
     public static void main(String[] args) throws Exception {
-        // Make local PoW easy
-        Node node = Node.inMemory(NodeConfig.defaultLocal());
-        node.start();
+        // Data dir from args[0] or default ./data/chain
+        String dataDir = args != null && args.length > 0 ? args[0] : "./data/chain";
+        Files.createDirectories(Path.of(dataDir));
 
-        // Start tiny HTTP server (below)
-        RpcServer http = new RpcServer(node, 8080);
-        http.start();
-        LOG.info("HTTP listening on http://localhost:8080");
+        Node node = Node.rocks(NodeConfig.defaultLocal(), dataDir);
+        try {
+            // If empty DB, this seeds genesis; otherwise picks up existing head
+            node.start();
 
-        // Mine a handful of blocks so you see progress
-        for (int i = 0; i < 5; i++) {
-            long t0 = System.currentTimeMillis();
+            long startHeight = node.chain().getHead()
+                    .map(h -> node.chain().getHeight(h).orElse(-1L))
+                    .orElse(-1L);
+            LOG.info("Starting height: " + startHeight);
+
+            // Mine one block (if mempool empty and height>0, PoW may still produce empty block if you want; fine for demo)
             Optional<byte[]> head = node.tick();
-            long ms = System.currentTimeMillis() - t0;
-            if (head.isPresent()) {
-                LOG.info("New block mined in " + ms + " ms; height="
-                        + node.chain().getHeight(head.get()).orElse(-1L));
-            } else {
-                LOG.info("No block produced this tick (try again)"); // e.g., no txs & height>0, or PoW not found
-            }
-        }
 
-        // keep process alive for HTTP (Ctrl+C to stop)
-        Thread.currentThread().join();
+            long endHeight = node.chain().getHead()
+                    .map(h -> node.chain().getHeight(h).orElse(-1L))
+                    .orElse(-1L);
+
+            LOG.info("Produced block? " + head.isPresent());
+            LOG.info("Ending height: " + endHeight);
+            LOG.info("Data dir: " + dataDir);
+            LOG.info("Restart this app and you should see the same or higher height.");
+        } finally {
+            node.close(); // flush & close RocksDB
+        }
     }
 }

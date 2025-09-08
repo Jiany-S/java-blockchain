@@ -6,6 +6,7 @@ import io.blockchain.core.mempool.TxValidator;
 import io.blockchain.core.protocol.Transaction;
 import io.blockchain.core.storage.ChainStore;
 import io.blockchain.core.storage.InMemoryChainStore;
+import io.blockchain.core.storage.RocksDBChainStore;
 import io.blockchain.core.state.InMemoryStateStore;
 import io.blockchain.core.state.StateStore;
 
@@ -52,6 +53,25 @@ public final class Node {
     /** Try to produce one block (returns new head hash if produced). */
     public Optional<byte[]> tick() {
         return this.producer.tick();
+    }
+
+    /** Convenience factory for a RocksDB-backed node. */
+    public static Node rocks(NodeConfig config, String dataDir) {
+        StateStore state = new InMemoryStateStore();
+        TxValidator validator = new TxValidator(state, 1L);
+        Mempool mempool = new Mempool(validator);
+        ChainStore chain = RocksDBChainStore.open(dataDir);
+        ProofOfWork pow = new ProofOfWork();
+        return new Node(chain, state, mempool, pow, config);
+    }
+
+    /** Close underlying resources if any (e.g., RocksDB). */
+    public void close() {
+        try {
+            if (chain instanceof AutoCloseable) {
+                ((AutoCloseable) chain).close();
+            }
+        } catch (Exception ignored) {}
     }
 
     public ChainStore chain() { return chain; }
