@@ -2,28 +2,40 @@ package io.blockchain.core;
 
 import io.blockchain.core.node.Node;
 import io.blockchain.core.node.NodeConfig;
-import io.blockchain.core.protocol.Transaction;
+import io.blockchain.core.rpc.RpcServer;
 
 import java.util.Optional;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
+/** Boots the node, starts HTTP, mines a few blocks. */
 public class Main {
-    public static void main(String[] args) {
+    private static final Logger LOG = Logger.getLogger(Main.class.getName());
+
+    public static void main(String[] args) throws Exception {
+        // Make local PoW easy
         Node node = Node.inMemory(NodeConfig.defaultLocal());
         node.start();
 
-        // Submit a real tx (alice -> bob)
-        Transaction tx = Transaction.builder()
-                .from("alice123456")
-                .to("bob654321")
-                .amountMinor(100)   // now funded by genesis
-                .feeMinor(1)
-                .nonce(0)           // alice's first tx
-                .build();
-        node.mempool().add(tx);
+        // Start tiny HTTP server (below)
+        RpcServer http = new RpcServer(node, 8080);
+        http.start();
+        LOG.info("HTTP listening on http://localhost:8080");
 
-        Optional<byte[]> head = node.tick();
-        System.out.println("Produced block? " + head.isPresent());
-        System.out.println("alice balance = " + node.state().getBalance("alice123456"));
-        System.out.println("bob balance   = " + node.state().getBalance("bob654321"));
+        // Mine a handful of blocks so you see progress
+        for (int i = 0; i < 5; i++) {
+            long t0 = System.currentTimeMillis();
+            Optional<byte[]> head = node.tick();
+            long ms = System.currentTimeMillis() - t0;
+            if (head.isPresent()) {
+                LOG.info("New block mined in " + ms + " ms; height="
+                        + node.chain().getHeight(head.get()).orElse(-1L));
+            } else {
+                LOG.info("No block produced this tick (try again)"); // e.g., no txs & height>0, or PoW not found
+            }
+        }
+
+        // keep process alive for HTTP (Ctrl+C to stop)
+        Thread.currentThread().join();
     }
 }
