@@ -161,5 +161,3 @@ MIT. See `LICENSE`.
   ```
 
 ---
-
-⚡ **Interview Tip:** This project shows end-to-end understanding: protocol design, consensus, state transition, persistence, and API exposure. Be ready to explain *why* you designed it modularly (protocol/state/storage/consensus), how PoW works, and how you’d extend it with P2P + signatures.
