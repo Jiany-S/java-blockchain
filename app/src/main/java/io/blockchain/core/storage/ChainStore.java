@@ -2,6 +2,10 @@ package io.blockchain.core.storage;
 
 import io.blockchain.core.protocol.Block;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -31,4 +35,24 @@ public interface ChainStore {
 
     /** Number of blocks stored (debug/metrics). */
     long size();
+
+    // In ChainStore.java (interface)
+    default Iterable<Block> getBlocksInOrder() {
+        List<Block> blocks = new ArrayList<>();
+        Optional<byte[]> headOpt = getHead();
+        if (headOpt.isEmpty()) return blocks;
+
+        // Walk backwards then reverse
+        byte[] cursor = headOpt.get();
+        while (cursor != null) {
+            Optional<Block> blk = getBlock(cursor);
+            if (blk.isEmpty()) break;
+            blocks.add(blk.get());
+            cursor = blk.get().header().parentHash();
+            if (Arrays.equals(cursor, new byte[32])) break; // stop at genesis
+        }
+        Collections.reverse(blocks);
+        return blocks;
+    }
+
 }

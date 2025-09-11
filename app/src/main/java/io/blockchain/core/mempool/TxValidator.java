@@ -1,5 +1,8 @@
 package io.blockchain.core.mempool;
 
+import java.security.PublicKey;
+
+import io.blockchain.core.protocol.SignatureUtil;
 import io.blockchain.core.protocol.Transaction;
 import io.blockchain.core.state.StateStore;
 
@@ -32,6 +35,10 @@ public final class TxValidator {
         if (have < need) {
             throw new IllegalArgumentException("insufficient balance");
         }
-        // TODO: signature verification later
+        // after checking nonce, fee, balance
+        if (tx.signature() == null || tx.signature().length == 0) {
+            throw new IllegalArgumentException("missing transaction signature");
+        }
+
     }
 }

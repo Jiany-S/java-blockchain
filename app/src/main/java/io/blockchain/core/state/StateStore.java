@@ -9,6 +9,7 @@ import io.blockchain.core.protocol.Transaction;
 public interface StateStore {
     long getBalance(String address);
     long getNonce(String address);
+    void applyTransaction(Transaction tx);
 
     /** Apply a single transaction (checked by caller). */
     void applyTx(Transaction tx);
@@ -24,4 +25,7 @@ public interface StateStore {
 
     /** Credit an address (genesis funding or manual recovery). */
     void credit(String address, long amount);
+    void setBalance(String address, long balance);   // <— add this
+    void setNonce(String address, long nonce);       // optional helper
+    
 }

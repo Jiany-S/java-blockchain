@@ -8,6 +8,7 @@ import io.blockchain.core.storage.ChainStore;
 import io.blockchain.core.storage.InMemoryChainStore;
 import io.blockchain.core.storage.RocksDBChainStore;
 import io.blockchain.core.state.InMemoryStateStore;
+import io.blockchain.core.state.StateReplayer;
 import io.blockchain.core.state.StateStore;
 
 import java.util.Optional;
@@ -47,11 +48,14 @@ public final class Node {
 
     /** Ensure genesis exists and balances are seeded. Safe to call multiple times. */
     public void start() {
-        // Always seed in-memory state for local dev (state is not persisted)
-        GenesisBuilder.seedBalances(state, config.genesisAllocations);
-
-        // Create genesis block if the chain has no head yet
-        GenesisBuilder.initIfNeeded(chain, state, config.genesisAllocations);
+        if (chain.getHead().isPresent()) {
+            // Existing chain: replay state
+            StateReplayer.replay(chain, state);
+        } else {
+            // Empty chain: genesis + seed
+            GenesisBuilder.seedBalances(state, config.genesisAllocations);
+            GenesisBuilder.initIfNeeded(chain, state, config.genesisAllocations);
+        }
     }
 
     /** Try to produce one block (returns new head hash if produced). */

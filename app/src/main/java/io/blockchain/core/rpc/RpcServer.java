@@ -35,6 +35,7 @@ public final class RpcServer {
         server.createContext("/balance", new BalanceHandler(node));
         server.createContext("/tx", new TxHandler(node));
         server.setExecutor(java.util.concurrent.Executors.newCachedThreadPool());
+        server.createContext("/metrics", new MetricsHandler());
         server.start();
     }
 

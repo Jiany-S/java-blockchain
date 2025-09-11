@@ -1,6 +1,7 @@
 package io.blockchain.core.node;
 
 import io.blockchain.core.consensus.ProofOfWork;
+import io.blockchain.core.consensus.ConsensusRules;
 import io.blockchain.core.mempool.Mempool;
 import io.blockchain.core.protocol.Block;
 import io.blockchain.core.protocol.BlockHeader;
@@ -8,12 +9,11 @@ import io.blockchain.core.protocol.Merkle;
 import io.blockchain.core.protocol.Transaction;
 import io.blockchain.core.storage.ChainStore;
 
-import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
 /**
- * Builds a block from mempool, runs PoW (optional), and persists it.
+ * Builds a block from mempool, runs PoW (optional), validates it, and persists it.
  */
 public final class BlockProducer {
 
@@ -78,20 +78,23 @@ public final class BlockProducer {
             finalBlock = mined.get();
         }
 
-        // 6) Persist and set head
+        // 6) Validate block before persisting
+        ConsensusRules.validateBlock(finalBlock, chain);
+
+        // 7) Persist and set head
         chain.putBlock(finalBlock);
         byte[] newHead = chain.getHead().orElse(null);
 
-        // 7) Evict included txs from mempool
+        // 8) Evict included txs from mempool
         mempool.removeAll(txs);
 
         return Optional.ofNullable(newHead);
     }
 
     private static java.util.List<byte[]> idsOf(List<Transaction> txs) {
-        if (txs == null || txs.isEmpty()) return java.util.Collections.<byte[]>emptyList();
-        java.util.List<byte[]> out = new java.util.ArrayList<byte[]>(txs.size());
-        for (int i = 0; i < txs.size(); i++) out.add(txs.get(i).id());
+        if (txs == null || txs.isEmpty()) return java.util.Collections.emptyList();
+        java.util.List<byte[]> out = new java.util.ArrayList<>(txs.size());
+        for (Transaction tx : txs) out.add(tx.id());
         return out;
     }
 }
