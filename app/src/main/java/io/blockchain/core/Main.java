@@ -1,11 +1,17 @@
 package io.blockchain.core;
 
+import java.util.function.Supplier;
 import io.blockchain.core.node.Node;
 import io.blockchain.core.node.NodeConfig;
 import io.blockchain.core.protocol.Transaction;
+import io.blockchain.core.protocol.SignatureUtil;
+import io.blockchain.core.metrics.BlockMetrics;
+import io.blockchain.core.p2p.P2pServer;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.*;
+import java.util.Optional;
 import java.util.logging.Logger;
 
 public class Main {
@@ -18,47 +24,73 @@ public class Main {
 
         Node node = Node.rocks(NodeConfig.defaultLocal(), dataDir);
         try {
-            // Seed balances each start (state is in-memory) and ensure genesis exists
             node.start();
 
+            // --- Mining tick #1 ---
             long startHeight = currentHeight(node);
-            long t0 = System.currentTimeMillis();
-            node.tick(); // try to produce a block (may be empty)
-            long ms = System.currentTimeMillis() - t0;
+            BlockMetrics.recordMining(() -> node.tick());
+            long afterTick = currentHeight(node);
+            LOG.info("First tick: height " + startHeight + " → " + afterTick);
 
-            long afterFirstTick = currentHeight(node);
-            boolean producedFirst = afterFirstTick > startHeight;
-            LOG.info("Produced block? " + producedFirst + " (+" + (afterFirstTick - startHeight) + ") in " + ms + " ms");
-            LOG.info("Height now: " + afterFirstTick);
+            // --- Generate key pair + sign tx ---
+            KeyPairGenerator kpg = KeyPairGenerator.getInstance("EC");
+            kpg.initialize(256);
+            KeyPair kp = kpg.generateKeyPair();
 
-            // Enqueue one demo tx (alice → bob), then try a few more ticks
             long nonce = node.state().getNonce("alice123456");
             Transaction tx = Transaction.builder()
                     .from("alice123456")
                     .to("bob654321")
-                    .amountMinor(100)    // <= funded balance from NodeConfig.defaultLocal()
+                    .amountMinor(100)
                     .feeMinor(1)
                     .nonce(nonce)
                     .build();
-            node.mempool().add(tx);
 
-            int tries = 5;
-            int produced = 0;
-            for (int i = 0; i < tries; i++) {
-                long hBefore = currentHeight(node);
-                node.tick();
-                long hAfter = currentHeight(node);
-                if (hAfter > hBefore) produced++;
+            byte[] sig = SignatureUtil.sign(tx.serialize(), kp.getPrivate());
+            tx = Transaction.builder()
+                    .from(tx.from())
+                    .to(tx.to())
+                    .amountMinor(tx.amountMinor())
+                    .feeMinor(tx.feeMinor())
+                    .nonce(tx.nonce())
+                    .signature(sig)
+                    .build();
+
+            if (SignatureUtil.verify(tx.serialize(), tx.signature(), kp.getPublic())) {
+                node.mempool().add(tx);
+                LOG.info("Signed tx added to mempool");
+            } else {
+                LOG.warning("Tx signature verification failed");
             }
 
-            long finalHeight = currentHeight(node);
-            LOG.info("Mined " + produced + " block(s) in " + tries + " additional tick(s).");
-            LOG.info("Ending height: " + finalHeight);
-            LOG.info("Data dir: " + dataDir);
-            LOG.info("Restart this app and you should see the same or higher height.");
-        } finally {
-            node.close(); // flush & close RocksDB
-        }
+            // --- Mine until tx included ---
+            int tries = 5;
+            for (int i = 0; i < tries; i++) {
+                long before = currentHeight(node);
+                Optional<byte[]> head = BlockMetrics.recordMining(() -> node.tick());
+                long after = currentHeight(node);
+                if (after > before) {
+                    BlockMetrics.incrementBlocks();
+                    LOG.info("Block mined at height " + after + " (try " + (i + 1) + ")");
+                }
+                if (head.isPresent()) break;
+            }
+
+            // --- Start P2P server ---
+            P2pServer server = new P2pServer(9000);
+            server.start();
+            LOG.info("P2P server started on port 9000");
+
+            // --- Print metrics ---
+            LOG.info("=== Metrics ===");
+            LOG.info(BlockMetrics.scrapeMetrics());
+
+            // For demo: keep alive briefly
+            Thread.sleep(5000);
+            server.stop();
+            } finally {
+                node.close();
+            }
     }
 
     private static long currentHeight(Node node) {

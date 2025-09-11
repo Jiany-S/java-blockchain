@@ -3,6 +3,8 @@ package io.blockchain.core.metrics;
 import io.micrometer.core.instrument.*;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
+import java.util.function.Supplier;
+
 public class BlockMetrics {
     private static final MeterRegistry registry = new SimpleMeterRegistry();
     private static final Counter blocksMined = registry.counter("blocks.mined");
@@ -17,9 +19,17 @@ public class BlockMetrics {
     }
 
     public static String scrapeMetrics() {
-        return registry.getMeters().stream()
-                .flatMap(m -> m.measure().stream())
-                .map(m -> m.getStatistic() + ": " + m.getValue())
-                .reduce("", (a, b) -> a + "\n" + b);
+        StringBuilder sb = new StringBuilder();
+        for (Meter m : registry.getMeters()) {
+            for (Measurement meas : m.measure()) {
+                sb.append(m.getId().getName())
+                  .append("{stat=")
+                  .append(meas.getStatistic())
+                  .append("} ")
+                  .append(meas.getValue())
+                  .append("\n");
+            }
+        }
+        return sb.toString();
     }
 }

@@ -13,12 +13,14 @@ public class P2pServer {
     private static final Logger LOG = Logger.getLogger(P2pServer.class.getName());
     private final int port;
     private Channel serverChannel;
+    private EventLoopGroup boss;
+    private EventLoopGroup worker;
 
     public P2pServer(int port) { this.port = port; }
 
     public void start() {
-        NioEventLoopGroup boss = new NioEventLoopGroup(1);
-        NioEventLoopGroup worker = new NioEventLoopGroup();
+        boss = new NioEventLoopGroup(1);
+        worker = new NioEventLoopGroup();
 
         try {
             ServerBootstrap b = new ServerBootstrap();
@@ -41,7 +43,13 @@ public class P2pServer {
     }
 
     public void stop() {
-        if (serverChannel != null) serverChannel.close();
+        try {
+            if (serverChannel != null) serverChannel.close().sync();
+        } catch (InterruptedException ignored) {
+        }
+        if (boss != null) boss.shutdownGracefully();
+        if (worker != null) worker.shutdownGracefully();
+        LOG.info("P2P server stopped");
     }
 
     private static class SimpleHandler extends SimpleChannelInboundHandler<byte[]> {

@@ -197,8 +197,10 @@ public final class Transaction {
         if (payload.length > 8 * 1024) throw new IllegalArgumentException("payload too large");
 
         // If signature is present, enforce a reasonable size (e.g., Ed25519 = 64 bytes).
-        if (signature.length != 0 && signature.length != 64) {
-            throw new IllegalArgumentException("unsupported signature length: " + signature.length);
+        if (signature != null && signature.length > 0) {
+            if (signature.length < 64 || signature.length > 80) {
+                throw new IllegalArgumentException("unsupported signature length: " + signature.length);
+            }
         }
 
         // Very light address format guard (tune with your real scheme later).
