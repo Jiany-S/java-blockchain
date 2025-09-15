@@ -13,6 +13,7 @@ dependencies {
     implementation("io.micrometer:micrometer-core:1.13.3")
     implementation("io.micrometer:micrometer-registry-prometheus:1.13.3")
     implementation("org.slf4j:slf4j-api:2.0.13")
+    implementation("com.fasterxml.jackson.core:jackson-databind:2.15.0")
     runtimeOnly("ch.qos.logback:logback-classic:1.5.6")
 
     // --- JUnit 5 (make platform + engine present at test runtime) ---

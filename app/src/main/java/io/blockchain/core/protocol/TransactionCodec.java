@@ -19,9 +19,12 @@ public final class TransactionCodec {
             long nonce = buf.getLong();
             long timestamp = buf.getLong();
             byte[] payload = readBytes(buf);
-            byte[] signature = readBytes(buf);
 
-            // Build (will compute id + basicValidate inside)
+            byte[] signature = new byte[0];
+            if (buf.hasRemaining()) {
+                signature = readBytes(buf);
+            }
+
             return Transaction.builder()
                     .version(version)
                     .chainId(chainId)
@@ -43,9 +46,13 @@ public final class TransactionCodec {
         byte[] arr = readBytes(b);
         return new String(arr, StandardCharsets.UTF_8);
     }
+
     private static byte[] readBytes(ByteBuffer b) {
+        if (b.remaining() < 4) return new byte[0];
         int len = b.getInt();
-        if (len < 0 || len > 16_000_000) throw new IllegalArgumentException("bad length: "+len);
+        if (len < 0 || len > b.remaining()) {
+            throw new IllegalArgumentException("Bad length: " + len + " (remaining=" + b.remaining() + ")");
+        }
         byte[] out = new byte[len];
         b.get(out);
         return out;

@@ -32,8 +32,12 @@ public final class Node {
         this.mempool = mempool;
         this.pow = pow;
         this.config = config;
-        this.producer = new BlockProducer(chain, mempool, pow,
-                config.difficultyBits, config.maxTxPerBlock, config.maxPowTries);
+        this.producer = new BlockProducer(
+                chain, mempool, pow,
+                config.difficultyBits,
+                config.maxTxPerBlock,
+                config.maxPowTries
+        );
     }
 
     /** Convenience factory for an in-memory local node. */
@@ -82,6 +86,7 @@ public final class Node {
         } catch (Exception ignored) {}
     }
 
+    // Properly typed accessors
     public ChainStore chain() { return chain; }
     public StateStore state() { return state; }
     public Mempool mempool() { return mempool; }

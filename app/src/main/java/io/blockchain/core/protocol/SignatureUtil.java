@@ -1,23 +1,44 @@
 package io.blockchain.core.protocol;
 
-import org.bouncycastle.jce.provider.BouncyCastleProvider;
-
 import java.security.*;
 
 public final class SignatureUtil {
-    static { Security.addProvider(new BouncyCastleProvider()); }
+    private SignatureUtil() {}
 
-    public static byte[] sign(byte[] data, PrivateKey pk) throws Exception {
-        Signature s = Signature.getInstance("SHA256withECDSA", "BC");
-        s.initSign(pk);
-        s.update(data);
-        return s.sign();
+    public static byte[] sign(byte[] data, PrivateKey priv) {
+        try {
+            Signature sig = Signature.getInstance("SHA256withECDSA");
+            sig.initSign(priv);
+            sig.update(data);
+            return sig.sign();
+        } catch (Exception e) {
+            throw new RuntimeException("Signing failed", e);
+        }
     }
 
-    public static boolean verify(byte[] data, byte[] sig, PublicKey pub) throws Exception {
-        Signature s = Signature.getInstance("SHA256withECDSA", "BC");
-        s.initVerify(pub);
-        s.update(data);
-        return s.verify(sig);
+    public static boolean verify(byte[] data, byte[] signature, PublicKey pub) {
+        try {
+            Signature sig = Signature.getInstance("SHA256withECDSA");
+            sig.initVerify(pub);
+            sig.update(data);
+            return sig.verify(signature);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    public static String deriveAddress(PublicKey pub) {
+        try {
+            MessageDigest sha = MessageDigest.getInstance("SHA-256");
+            byte[] hash = sha.digest(pub.getEncoded());
+            // hex string, first 40 chars
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < 20; i++) {
+                sb.append(String.format("%02x", hash[i]));
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            throw new RuntimeException("Address derivation failed", e);
+        }
     }
 }
