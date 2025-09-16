@@ -32,4 +32,8 @@ public class BlockMetrics {
         }
         return sb.toString();
     }
+
+    public static MeterRegistry registry() {
+        return registry;
+    }
 }
