@@ -54,10 +54,9 @@ public final class Node {
     public void start() {
         if (chain.getHead().isPresent()) {
             // Existing chain: replay state
-            StateReplayer.replay(chain, state);
+            StateReplayer.replay(chain, state, config.genesisAllocations);
         } else {
             // Empty chain: genesis + seed
-            GenesisBuilder.seedBalances(state, config.genesisAllocations);
             GenesisBuilder.initIfNeeded(chain, state, config.genesisAllocations);
         }
     }
@@ -91,3 +90,6 @@ public final class Node {
     public StateStore state() { return state; }
     public Mempool mempool() { return mempool; }
 }
+
+
+

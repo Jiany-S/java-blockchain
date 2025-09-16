@@ -5,6 +5,8 @@ import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import io.blockchain.core.node.Node;
 import io.blockchain.core.protocol.Transaction;
+import io.blockchain.core.wallet.Wallet;
+import io.blockchain.core.wallet.WalletStore;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -24,16 +26,24 @@ public final class RpcServer {
     private static final Logger LOG = Logger.getLogger(RpcServer.class.getName());
 
     private final Node node;
+    private final WalletStore walletStore;
     private final int port;
     private HttpServer server;
 
-    public RpcServer(Node node, int port) { this.node = node; this.port = port; }
+    public RpcServer(Node node, WalletStore walletStore, int port) {
+        this.node = node;
+        this.walletStore = walletStore;
+        this.port = port;
+    }
 
     public void start() throws IOException {
         server = HttpServer.create(new InetSocketAddress(port), 0);
         server.createContext("/status", new StatusHandler(node));
         server.createContext("/balance", new BalanceHandler(node));
         server.createContext("/tx", new TxHandler(node));
+        server.createContext("/wallet/list", new WalletListHandler(walletStore));
+        server.createContext("/wallet/create", new WalletCreateHandler(walletStore));
+        server.createContext("/wallet/send", new WalletSendHandler(node, walletStore));
         server.setExecutor(java.util.concurrent.Executors.newCachedThreadPool());
         server.createContext("/metrics", new MetricsHandler());
         server.start();
@@ -112,6 +122,131 @@ public final class RpcServer {
         }
     }
 
+    static final class WalletListHandler implements HttpHandler {
+        private final WalletStore store;
+        WalletListHandler(WalletStore store) { this.store = store; }
+
+        public void handle(HttpExchange ex) throws IOException {
+            if (!"GET".equalsIgnoreCase(ex.getRequestMethod())) {
+                respondJson(ex, 405, "{ \"error\":\"use GET\" }");
+                return;
+            }
+            List<WalletStore.WalletInfo> infos = store.listWallets();
+            StringBuilder sb = new StringBuilder();
+            sb.append("{ \"wallets\": [");
+            for (int i = 0; i < infos.size(); i++) {
+                WalletStore.WalletInfo info = infos.get(i);
+                if (i > 0) sb.append(", ");
+                sb.append("{ \"alias\": \"").append(escape(info.alias)).append("\", \"address\": \"")
+                  .append(escape(info.address)).append("\", \"locked\": ").append(info.locked).append(" }");
+            }
+            sb.append("] }");
+            respondJson(ex, 200, sb.toString());
+        }
+    }
+
+    static final class WalletCreateHandler implements HttpHandler {
+        private final WalletStore store;
+        WalletCreateHandler(WalletStore store) { this.store = store; }
+
+        public void handle(HttpExchange ex) throws IOException {
+            if (!"POST".equalsIgnoreCase(ex.getRequestMethod())) {
+                respondJson(ex, 405, "{ \"error\":\"use POST\" }");
+                return;
+            }
+            String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8).trim();
+            try {
+                Map<String,String> m = parseSimpleJson(body);
+                String alias = require(m, "alias");
+                char[] pass = toPassword(m.get("passphrase"));
+                try {
+                    store.createWallet(alias, pass);
+                } finally {
+                    if (pass != null) Arrays.fill(pass, '\0');
+                }
+                WalletStore.WalletInfo info = store.info(alias);
+                respondJson(ex, 201, "{ \"alias\": \"" + escape(info.alias) + "\", \"address\": \""
+                        + escape(info.address) + "\", \"locked\": " + info.locked + " }");
+            } catch (Exception e) {
+                respondJson(ex, 400, "{ \"error\": \"" + escape(e.getMessage()) + "\" }");
+            }
+        }
+    }
+
+    static final class WalletSendHandler implements HttpHandler {
+        private final Node node;
+        private final WalletStore store;
+        WalletSendHandler(Node node, WalletStore store) {
+            this.node = node;
+            this.store = store;
+        }
+
+        public void handle(HttpExchange ex) throws IOException {
+            if (!"POST".equalsIgnoreCase(ex.getRequestMethod())) {
+                respondJson(ex, 405, "{ \"error\":\"use POST\" }");
+                return;
+            }
+            String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8).trim();
+            try {
+                Map<String,String> m = parseSimpleJson(body);
+                String alias = require(m, "fromAlias");
+                String to = require(m, "to");
+                long amount = Long.parseLong(require(m, "amountMinor"));
+                long fee = Long.parseLong(require(m, "feeMinor"));
+                String payloadHex = m.getOrDefault("payloadHex", "");
+                char[] pass = toPassword(m.get("passphrase"));
+                Wallet wallet;
+                try {
+                    if (pass != null) {
+                        wallet = store.getWallet(alias, pass);
+                    } else {
+                        wallet = store.getWallet(alias);
+                    }
+                } finally {
+                    if (pass != null) Arrays.fill(pass, '\0');
+                }
+                if (wallet == null) {
+                    respondJson(ex, 404, "{ \"error\": \"wallet not found\" }");
+                    return;
+                }
+                byte[] payload = parseHex(payloadHex);
+                if (amount <= 0 || fee < 0) {
+                    respondJson(ex, 400, "{ \"error\": \"invalid amount or fee\" }");
+                    return;
+                }
+                long nonce = node.state().getNonce(wallet.getAddress());
+                long timestamp = System.currentTimeMillis();
+                Transaction unsignedTx = Transaction.builder()
+                        .from(wallet.getAddress())
+                        .to(to)
+                        .amountMinor(amount)
+                        .feeMinor(fee)
+                        .nonce(nonce)
+                        .timestamp(timestamp)
+                        .payload(payload)
+                        .build();
+                byte[] signature = wallet.sign(unsignedTx.toUnsignedBytes());
+                Transaction signedTx = Transaction.builder()
+                        .from(unsignedTx.from())
+                        .to(unsignedTx.to())
+                        .amountMinor(unsignedTx.amountMinor())
+                        .feeMinor(unsignedTx.feeMinor())
+                        .nonce(unsignedTx.nonce())
+                        .timestamp(unsignedTx.timestamp())
+                        .payload(unsignedTx.payload())
+                        .signature(signature)
+                        .publicKey(wallet.getPublicKey())
+                        .build();
+                node.mempool().add(signedTx);
+                respondJson(ex, 200, "{ \"accepted\": true, \"txId\": \"" + toHex(signedTx.id()) + "\", \"nonce\": " + signedTx.nonce() + " }");
+            } catch (IllegalStateException e) {
+                respondJson(ex, 403, "{ \"error\": \"" + escape(e.getMessage()) + "\" }");
+            } catch (Exception e) {
+                respondJson(ex, 400, "{ \"accepted\": false, \"error\": \"" + escape(e.getMessage()) + "\" }");
+            }
+        }
+    }
+
     // ---------------- utils ----------------
 
     private static void respondJson(HttpExchange ex, int code, String json) throws IOException {
@@ -182,8 +317,33 @@ public final class RpcServer {
         return new String(out);
     }
 
+    private static byte[] parseHex(String hex) {
+        if (hex == null || hex.isEmpty()) {
+            return new byte[0];
+        }
+        String normalized = hex.startsWith("0x") || hex.startsWith("0X") ? hex.substring(2) : hex;
+        if (normalized.length() % 2 != 0) {
+            normalized = "0" + normalized;
+        }
+        int len = normalized.length();
+        byte[] out = new byte[len / 2];
+        for (int i = 0; i < len; i += 2) {
+            int hi = Character.digit(normalized.charAt(i), 16);
+            int lo = Character.digit(normalized.charAt(i + 1), 16);
+            if (hi < 0 || lo < 0) {
+                throw new IllegalArgumentException("payloadHex must be hexadecimal");
+            }
+            out[i / 2] = (byte) ((hi << 4) + lo);
+        }
+        return out;
+    }
+
     private static String escape(String s){
         if (s == null) return "";
         return s.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    private static char[] toPassword(String value) {
+        return value != null && !value.isEmpty() ? value.toCharArray() : null;
     }
 }
