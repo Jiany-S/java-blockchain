@@ -1,0 +1,27 @@
+services:
+  node:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: java-blockchain:latest
+    environment:
+      DATA_DIR: /data/chain
+      API_BIND: 0.0.0.0
+      API_PORT: 8080
+      RPC_BIND: 0.0.0.0
+      RPC_PORT: 9090
+      P2P_PORT: 9000
+      ENABLE_API: "true"
+      ENABLE_RPC: "true"
+      ENABLE_P2P: "true"
+      RUN_DEMO: "false"
+      # Set API_TOKEN/RPC_TOKEN to secure the endpoints
+      # API_TOKEN: change-me
+      # RPC_TOKEN: change-me
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+      - "9000:9000"
+    volumes:
+      - ../app/data:/data
+    restart: unless-stopped

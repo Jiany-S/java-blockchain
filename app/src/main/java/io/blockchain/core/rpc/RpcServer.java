@@ -9,6 +9,7 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import io.blockchain.core.metrics.HttpMetrics;
+import io.blockchain.core.metrics.BlockMetrics;
 import io.blockchain.core.node.Node;
 import io.blockchain.core.protocol.Transaction;
 import io.blockchain.core.wallet.Wallet;
@@ -28,9 +29,6 @@ import java.util.concurrent.Executors;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
-/**
- * Minimal RPC server for interacting with the node over HTTP/JSON.
- */
 public final class RpcServer {
     private static final Logger LOG = Logger.getLogger(RpcServer.class.getName());
     private static final byte[] OPENAPI_SPEC = """
@@ -44,7 +42,7 @@ public final class RpcServer {
     "/status": {
       "get": {
         "summary": "Node status and head information",
-        "responses": { "200": { "description": "Status response" } }
+        "responses": { "200": { "description": "Status response" }, "401": { "description": "Auth required" } }
       }
     },
     "/balance": {
@@ -60,7 +58,8 @@ public final class RpcServer {
         ],
         "responses": {
           "200": { "description": "Balance response" },
-          "400": { "description": "Missing or invalid parameters" }
+          "400": { "description": "Missing or invalid parameters" },
+          "401": { "description": "Auth required" }
         }
       }
     },
@@ -77,14 +76,15 @@ public final class RpcServer {
         },
         "responses": {
           "200": { "description": "Transaction accepted" },
-          "400": { "description": "Invalid transaction" }
+          "400": { "description": "Invalid transaction" },
+          "401": { "description": "Auth required" }
         }
       }
     },
     "/wallet/list": {
       "get": {
         "summary": "List wallet aliases and addresses",
-        "responses": { "200": { "description": "Wallet list" } }
+        "responses": { "200": { "description": "Wallet list" }, "401": { "description": "Auth required" } }
       }
     },
     "/wallet/create": {
@@ -100,7 +100,8 @@ public final class RpcServer {
         },
         "responses": {
           "201": { "description": "Wallet created" },
-          "400": { "description": "Validation error" }
+          "400": { "description": "Validation error" },
+          "401": { "description": "Auth required" }
         }
       }
     },
@@ -118,20 +119,21 @@ public final class RpcServer {
         "responses": {
           "200": { "description": "Transaction accepted" },
           "400": { "description": "Validation error" },
-          "404": { "description": "Wallet not found" }
+          "404": { "description": "Wallet not found" },
+          "401": { "description": "Auth required" }
         }
       }
     },
     "/metrics": {
       "get": {
         "summary": "Prometheus metrics scrape",
-        "responses": { "200": { "description": "Metrics in Prometheus exposition format" } }
+        "responses": { "200": { "description": "Metrics in Prometheus exposition format" }, "401": { "description": "Auth required" } }
       }
     },
     "/openapi.json": {
       "get": {
-        "summary": "Return this OpenAPI document",
-        "responses": { "200": { "description": "OpenAPI specification" } }
+        "summary": "OpenAPI description of this RPC API",
+        "responses": { "200": { "description": "OpenAPI specification" }, "401": { "description": "Auth required" } }
       }
     }
   },
@@ -176,37 +178,64 @@ public final class RpcServer {
 
     private final Node node;
     private final WalletStore walletStore;
+    private final String bindAddress;
     private final int port;
+    private final String authToken;
     private final ObjectMapper mapper;
     private HttpServer server;
 
-    public RpcServer(Node node, WalletStore walletStore, int port) {
+    public RpcServer(Node node, WalletStore walletStore, String bindAddress, int port, String authToken) {
         this.node = node;
         this.walletStore = walletStore;
+        this.bindAddress = (bindAddress == null || bindAddress.isBlank()) ? "127.0.0.1" : bindAddress;
         this.port = port;
-        this.mapper = new ObjectMapper()
-                .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+        this.authToken = (authToken == null || authToken.isBlank()) ? null : authToken;
+        this.mapper = new ObjectMapper().configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
     }
 
     public void start() throws IOException {
-        server = HttpServer.create(new InetSocketAddress(port), 0);
+        if (server != null) {
+            throw new IllegalStateException("RPC server already running");
+        }
+        server = HttpServer.create(new InetSocketAddress(bindAddress, port), 0);
         server.createContext("/status", new StatusHandler());
         server.createContext("/balance", new BalanceHandler());
         server.createContext("/tx", new TxHandler());
         server.createContext("/wallet/list", new WalletListHandler());
         server.createContext("/wallet/create", new WalletCreateHandler());
         server.createContext("/wallet/send", new WalletSendHandler());
-        server.createContext("/metrics", new MetricsHandler());
+        server.createContext("/metrics", new MetricsHandlerImpl());
         server.createContext("/openapi.json", new OpenApiHandler());
         server.setExecutor(Executors.newCachedThreadPool());
         server.start();
-        LOG.info("RPC server started on port " + port);
+        LOG.info(() -> "RPC server listening on http://" + bindAddress + ':' + port + (authToken != null ? " (auth required)" : ""));
     }
 
     public void stop() {
         if (server != null) {
             server.stop(0);
+            server = null;
         }
+    }
+
+    private int ensureAuthorized(HttpExchange exchange) throws IOException {
+        if (authToken == null) {
+            return -1;
+        }
+        List<String> authHeaders = exchange.getRequestHeaders().get("Authorization");
+        if (authHeaders != null) {
+            for (String header : authHeaders) {
+                if (header != null && header.equals("Bearer " + authToken)) {
+                    return -1;
+                }
+            }
+        }
+        String apiKey = exchange.getRequestHeaders().getFirst("X-API-Key");
+        if (apiKey != null && apiKey.equals(authToken)) {
+            return -1;
+        }
+        exchange.getResponseHeaders().set("WWW-Authenticate", "Bearer");
+        return sendError(exchange, 401, "unauthorized", "Missing or invalid credentials");
     }
 
     final class StatusHandler implements HttpHandler {
@@ -219,6 +248,10 @@ public final class RpcServer {
             try {
                 if (!"GET".equalsIgnoreCase(method)) {
                     status = sendError(exchange, 405, "method_not_allowed", "Use GET for this endpoint");
+                    return;
+                }
+                status = ensureAuthorized(exchange);
+                if (status != -1) {
                     return;
                 }
                 long height = -1;
@@ -255,6 +288,10 @@ public final class RpcServer {
                     status = sendError(exchange, 405, "method_not_allowed", "Use GET for this endpoint");
                     return;
                 }
+                status = ensureAuthorized(exchange);
+                if (status != -1) {
+                    return;
+                }
                 String address = queryParam(exchange.getRequestURI(), "addr");
                 if (address == null || address.isBlank()) {
                     status = sendError(exchange, 400, "missing_addr", "Query parameter 'addr' is required");
@@ -285,6 +322,10 @@ public final class RpcServer {
             try {
                 if (!"POST".equalsIgnoreCase(method)) {
                     status = sendError(exchange, 405, "method_not_allowed", "Use POST for this endpoint");
+                    return;
+                }
+                status = ensureAuthorized(exchange);
+                if (status != -1) {
                     return;
                 }
                 TxRequest req;
@@ -336,6 +377,10 @@ public final class RpcServer {
                     status = sendError(exchange, 405, "method_not_allowed", "Use GET for this endpoint");
                     return;
                 }
+                status = ensureAuthorized(exchange);
+                if (status != -1) {
+                    return;
+                }
                 List<WalletInfo> infos = walletStore.listWallets();
                 ArrayNode array = mapper.createArrayNode();
                 for (WalletInfo info : infos) {
@@ -363,6 +408,10 @@ public final class RpcServer {
             try {
                 if (!"POST".equalsIgnoreCase(method)) {
                     status = sendError(exchange, 405, "method_not_allowed", "Use POST for this endpoint");
+                    return;
+                }
+                status = ensureAuthorized(exchange);
+                if (status != -1) {
                     return;
                 }
                 WalletCreateRequest req;
@@ -411,6 +460,10 @@ public final class RpcServer {
                     status = sendError(exchange, 405, "method_not_allowed", "Use POST for this endpoint");
                     return;
                 }
+                status = ensureAuthorized(exchange);
+                if (status != -1) {
+                    return;
+                }
                 WalletSendRequest req;
                 try {
                     req = mapper.readValue(exchange.getRequestBody(), WalletSendRequest.class);
@@ -428,7 +481,7 @@ public final class RpcServer {
                 }
 
                 char[] pass = toPassword(req.passphrase);
-                Wallet wallet = null;
+                Wallet wallet;
                 try {
                     wallet = pass != null ? walletStore.getWallet(req.fromAlias, pass) : walletStore.getWallet(req.fromAlias);
                 } catch (IllegalStateException e) {
@@ -493,6 +546,37 @@ public final class RpcServer {
         }
     }
 
+    final class MetricsHandlerImpl implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            String method = exchange.getRequestMethod();
+            String path = exchange.getHttpContext().getPath();
+            var sample = HttpMetrics.start(method, path);
+            int status = 500;
+            try {
+                if (!"GET".equalsIgnoreCase(method)) {
+                    status = sendError(exchange, 405, "method_not_allowed", "Use GET for this endpoint");
+                    return;
+                }
+                status = ensureAuthorized(exchange);
+                if (status != -1) {
+                    return;
+                }
+                String metrics = BlockMetrics.scrapeMetrics();
+                byte[] payload = metrics.getBytes(StandardCharsets.UTF_8);
+                exchange.getResponseHeaders().set("Content-Type", "text/plain; version=0.0.4");
+                exchange.sendResponseHeaders(200, payload.length);
+                try (OutputStream os = exchange.getResponseBody()) {
+                    os.write(payload);
+                }
+                status = 200;
+            } finally {
+                HttpMetrics.stop(sample, method, path, status);
+                exchange.close();
+            }
+        }
+    }
+
     final class OpenApiHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
@@ -503,6 +587,10 @@ public final class RpcServer {
             try {
                 if (!"GET".equalsIgnoreCase(method)) {
                     status = sendError(exchange, 405, "method_not_allowed", "Use GET for this endpoint");
+                    return;
+                }
+                status = ensureAuthorized(exchange);
+                if (status != -1) {
                     return;
                 }
                 status = sendJson(exchange, 200, OPENAPI_SPEC);

@@ -13,6 +13,7 @@ import io.blockchain.core.node.Node;
 import io.blockchain.core.protocol.Transaction;
 import io.blockchain.core.wallet.Wallet;
 import io.blockchain.core.wallet.WalletStore;
+import io.blockchain.core.wallet.WalletStore.WalletInfo;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -48,7 +49,8 @@ public class ApiServer {
         ],
         "responses": {
           "200": { "description": "Balance information" },
-          "400": { "description": "Missing or invalid parameters" }
+          "400": { "description": "Missing or invalid parameters" },
+          "401": { "description": "Auth required" }
         }
       }
     },
@@ -65,7 +67,8 @@ public class ApiServer {
         },
         "responses": {
           "200": { "description": "Transaction accepted" },
-          "400": { "description": "Rejected transaction" }
+          "400": { "description": "Rejected transaction" },
+          "401": { "description": "Auth required" }
         }
       }
     },
@@ -73,14 +76,15 @@ public class ApiServer {
       "get": {
         "summary": "Retrieve chain head and height",
         "responses": {
-          "200": { "description": "Chain information" }
+          "200": { "description": "Chain information" },
+          "401": { "description": "Auth required" }
         }
       }
     },
     "/wallets": {
       "get": {
         "summary": "List known wallets",
-        "responses": { "200": { "description": "Wallet list" } }
+        "responses": { "200": { "description": "Wallet list" }, "401": { "description": "Auth required" } }
       },
       "post": {
         "summary": "Create a new wallet",
@@ -94,7 +98,8 @@ public class ApiServer {
         },
         "responses": {
           "201": { "description": "Wallet created" },
-          "400": { "description": "Validation error" }
+          "400": { "description": "Validation error" },
+          "401": { "description": "Auth required" }
         }
       }
     },
@@ -112,14 +117,15 @@ public class ApiServer {
         "responses": {
           "200": { "description": "Transaction accepted" },
           "400": { "description": "Validation error" },
+          "401": { "description": "Auth required" },
           "404": { "description": "Wallet not found" }
         }
       }
     },
     "/openapi.json": {
       "get": {
-        "summary": "Return this OpenAPI document",
-        "responses": { "200": { "description": "OpenAPI specification" } }
+        "summary": "OpenAPI description of this REST API",
+        "responses": { "200": { "description": "OpenAPI specification" }, "401": { "description": "Auth required" } }
       }
     }
   },
@@ -142,7 +148,7 @@ public class ApiServer {
         "required": ["alias"],
         "properties": {
           "alias": { "type": "string" },
-          "passphrase": { "type": "string", "description": "Optional passphrase to encrypt the private key" }
+          "passphrase": { "type": "string" }
         }
       },
       "WalletSend": {
@@ -165,23 +171,25 @@ public class ApiServer {
     private final Node node;
     private final WalletStore walletStore;
     private final ObjectMapper mapper;
+    private final String bindAddress;
     private final int port;
+    private final String authToken;
     private HttpServer httpServer;
 
-    public ApiServer(Node node, WalletStore walletStore, int port) {
+    public ApiServer(Node node, WalletStore walletStore, String bindAddress, int port, String authToken) {
         this.node = node;
         this.walletStore = walletStore;
+        this.bindAddress = (bindAddress == null || bindAddress.isBlank()) ? "127.0.0.1" : bindAddress;
         this.port = port;
-        this.mapper = new ObjectMapper()
-                .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+        this.authToken = (authToken == null || authToken.isBlank()) ? null : authToken;
+        this.mapper = new ObjectMapper().configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
     }
 
     public void start() throws IOException {
-        start(this.port);
-    }
-
-    public void start(int port) throws IOException {
-        httpServer = HttpServer.create(new InetSocketAddress(port), 0);
+        if (httpServer != null) {
+            throw new IllegalStateException("API server already running");
+        }
+        httpServer = HttpServer.create(new InetSocketAddress(bindAddress, port), 0);
         httpServer.createContext("/balance", new BalanceHandler());
         httpServer.createContext("/submit", new SubmitHandler());
         httpServer.createContext("/chain", new ChainInfoHandler());
@@ -190,13 +198,34 @@ public class ApiServer {
         httpServer.createContext("/openapi.json", new OpenApiHandler());
         httpServer.setExecutor(null);
         httpServer.start();
-        LOG.info("API HTTP server started on port " + port);
+        LOG.info(() -> "REST API listening on http://" + bindAddress + ':' + port + (authToken != null ? " (auth required)" : ""));
     }
 
     public void stop() {
         if (httpServer != null) {
             httpServer.stop(0);
+            httpServer = null;
         }
+    }
+
+    private int ensureAuthorized(HttpExchange exchange) throws IOException {
+        if (authToken == null) {
+            return -1;
+        }
+        List<String> authHeaders = exchange.getRequestHeaders().get("Authorization");
+        if (authHeaders != null) {
+            for (String header : authHeaders) {
+                if (header != null && header.equals("Bearer " + authToken)) {
+                    return -1;
+                }
+            }
+        }
+        String apiKey = exchange.getRequestHeaders().getFirst("X-API-Key");
+        if (apiKey != null && apiKey.equals(authToken)) {
+            return -1;
+        }
+        exchange.getResponseHeaders().set("WWW-Authenticate", "Bearer");
+        return sendError(exchange, 401, "unauthorized", "Missing or invalid credentials");
     }
 
     class BalanceHandler implements HttpHandler {
@@ -211,6 +240,10 @@ public class ApiServer {
                     status = sendError(exchange, 405, "method_not_allowed", "Use GET for this endpoint");
                     return;
                 }
+                status = ensureAuthorized(exchange);
+                if (status != -1) {
+                    return;
+                }
                 String address = queryParam(exchange, "address");
                 if (address == null || address.isBlank()) {
                     status = sendError(exchange, 400, "missing_address", "Query parameter 'address' is required");
@@ -222,7 +255,7 @@ public class ApiServer {
                         .put("nonce", node.state().getNonce(address));
                 status = sendJson(exchange, 200, resp);
             } catch (Exception e) {
-                LOG.log(Level.WARNING, "Balance request failed", e);
+                LOG.log(Level.WARNING, "Balance handler failed", e);
                 status = sendError(exchange, 500, "internal_error", "Unexpected server error");
             } finally {
                 HttpMetrics.stop(sample, method, path, status);
@@ -243,25 +276,28 @@ public class ApiServer {
                     status = sendError(exchange, 405, "method_not_allowed", "Use POST for this endpoint");
                     return;
                 }
-                TransactionRequest tr;
+                status = ensureAuthorized(exchange);
+                if (status != -1) {
+                    return;
+                }
+                TransactionRequest req;
                 try {
-                    tr = mapper.readValue(exchange.getRequestBody(), TransactionRequest.class);
+                    req = mapper.readValue(exchange.getRequestBody(), TransactionRequest.class);
                 } catch (JsonProcessingException e) {
                     status = sendError(exchange, 400, "invalid_json", "Failed to parse transaction request");
                     return;
                 }
                 try {
                     Transaction tx = Transaction.builder()
-                            .from(tr.from)
-                            .to(tr.to)
-                            .amountMinor(tr.amount)
-                            .feeMinor(tr.fee)
-                            .nonce(tr.nonce)
-                            .signature(tr.signatureBytes)
+                            .from(req.from)
+                            .to(req.to)
+                            .amountMinor(req.amount)
+                            .feeMinor(req.fee)
+                            .nonce(req.nonce)
+                            .signature(req.signatureBytes)
                             .build();
                     node.mempool().add(tx);
-                    ObjectNode resp = mapper.createObjectNode().put("status", "ok");
-                    status = sendJson(exchange, 200, resp);
+                    status = sendJson(exchange, 200, mapper.createObjectNode().put("status", "ok"));
                 } catch (Exception e) {
                     status = sendError(exchange, 400, "invalid_transaction", Optional.ofNullable(e.getMessage()).orElse("Rejected transaction"));
                 }
@@ -284,6 +320,10 @@ public class ApiServer {
                     status = sendError(exchange, 405, "method_not_allowed", "Use GET for this endpoint");
                     return;
                 }
+                status = ensureAuthorized(exchange);
+                if (status != -1) {
+                    return;
+                }
                 ObjectNode resp = mapper.createObjectNode();
                 resp.put("head", node.chain().getHead().map(ApiServer::bytesToHex).orElse(""));
                 resp.put("height", node.chain().getHead()
@@ -291,7 +331,7 @@ public class ApiServer {
                         .orElse(0L));
                 status = sendJson(exchange, 200, resp);
             } catch (Exception e) {
-                LOG.log(Level.WARNING, "Chain info failed", e);
+                LOG.log(Level.WARNING, "Chain info handler failed", e);
                 status = sendError(exchange, 500, "internal_error", "Unexpected server error");
             } finally {
                 HttpMetrics.stop(sample, method, path, status);
@@ -309,8 +349,16 @@ public class ApiServer {
             int status = 500;
             try {
                 if ("GET".equalsIgnoreCase(method)) {
+                    status = ensureAuthorized(exchange);
+                    if (status != -1) {
+                        return;
+                    }
                     status = handleList(exchange);
                 } else if ("POST".equalsIgnoreCase(method)) {
+                    status = ensureAuthorized(exchange);
+                    if (status != -1) {
+                        return;
+                    }
                     status = handleCreate(exchange);
                 } else {
                     status = sendError(exchange, 405, "method_not_allowed", "Supported methods: GET, POST");
@@ -322,9 +370,9 @@ public class ApiServer {
         }
 
         private int handleList(HttpExchange exchange) throws IOException {
-            List<WalletStore.WalletInfo> infos = walletStore.listWallets();
+            List<WalletInfo> infos = walletStore.listWallets();
             ArrayNode array = mapper.createArrayNode();
-            for (WalletStore.WalletInfo info : infos) {
+            for (WalletInfo info : infos) {
                 array.addObject()
                         .put("alias", info.alias)
                         .put("address", info.address)
@@ -373,6 +421,10 @@ public class ApiServer {
                     status = sendError(exchange, 405, "method_not_allowed", "Use POST for this endpoint");
                     return;
                 }
+                status = ensureAuthorized(exchange);
+                if (status != -1) {
+                    return;
+                }
                 SendTransactionRequest req;
                 try {
                     req = mapper.readValue(exchange.getRequestBody(), SendTransactionRequest.class);
@@ -390,13 +442,9 @@ public class ApiServer {
                 }
 
                 char[] pass = toPassword(req.passphrase);
-                Wallet wallet = null;
+                Wallet wallet;
                 try {
-                    if (pass != null) {
-                        wallet = walletStore.getWallet(req.fromAlias, pass);
-                    } else {
-                        wallet = walletStore.getWallet(req.fromAlias);
-                    }
+                    wallet = pass != null ? walletStore.getWallet(req.fromAlias, pass) : walletStore.getWallet(req.fromAlias);
                 } catch (IllegalStateException e) {
                     status = sendError(exchange, 403, "wallet_locked", e.getMessage());
                     return;
@@ -471,6 +519,10 @@ public class ApiServer {
             try {
                 if (!"GET".equalsIgnoreCase(method)) {
                     status = sendError(exchange, 405, "method_not_allowed", "Use GET for this endpoint");
+                    return;
+                }
+                status = ensureAuthorized(exchange);
+                if (status != -1) {
                     return;
                 }
                 status = sendJson(exchange, 200, OPENAPI_SPEC);

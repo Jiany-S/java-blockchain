@@ -1,163 +1,120 @@
-# 🚀 java-blockchain
+# java-blockchain
 
-**A minimal blockchain node built from scratch in Java.**  
-Implements the fundamentals of blockchain protocols: transactions, blocks, Proof-of-Work consensus, state management, a mempool, RocksDB persistence, and a minimal RPC API.
+A minimal blockchain node written in Java. It implements a simple account-based protocol with Proof-of-Work mining, RocksDB-backed persistence, wallet management, and optional REST/RPC front-ends for interacting with the node.
 
-> 🎯 Goal: provide a clean, hackable reference implementation for learning and experimentation.
+## Features
 
----
+- **Protocol & Consensus** � transactions with nonce/fee/signature fields, block headers with Merkle roots, configurable PoW difficulty
+- **State Management** � account balances and nonces, deterministic replay from the persisted chain, demo flow for quick experiments
+- **Storage** � RocksDB chain store (with an in-memory implementation for tests)
+- **Wallets** � persistent EC key generation, optional passphrase encryption, automatic address derivation
+- **APIs** �
+  - REST API (OpenAPI served at `/openapi.json`)
+  - JSON-style RPC endpoints
+  - Prometheus metrics at `/metrics`
+- **Tooling** � Gradle build, cross-platform dev scripts, Docker image & docker-compose example
 
-## ✨ Key Features
+## Requirements
 
-- **Protocol Layer**
-  - Transactions with nonce, fee, signature fields
-  - Blocks with headers, Merkle root, deterministic serialization
-- **Consensus**
-  - Proof-of-Work mining (configurable difficulty in “leading zero bits”)
-  - Genesis block with custom allocations
-- **State Management**
-  - Account model: balances + nonces
-  - Stateless + stateful transaction validation
-- **Mempool**
-  - Nonce ordering, fee checks, balance checks
-  - Validates via `TxValidator`
-- **Storage**
-  - In-memory chain store for tests
-  - Persistent RocksDB chain store for durability
-- **Node Runtime**
-  - Produces new blocks, applies state, persists chain
-  - Seeds dev accounts (`alice123456`, `bob654321`) for demo transactions
-- **RPC API (optional)**
-  - `GET /status` → node height & head
-  - `GET /balance?addr=...` → balance & nonce
-  - `POST /tx` → submit a transaction
-- **Developer-friendly**
-  - Clear package structure
-  - Gradle wrapper with JUnit 5 & SLF4J/Logback
-  - Cross-platform (Linux, macOS, Windows)
+- JDK 21 (Temurin recommended)
+- Gradle wrapper included (no local Gradle install necessary)
+- RocksDB JNI is pulled automatically by Gradle
 
----
-
-## 🗂 Project Structure
-
-```
-app/
-  src/
-    main/java/io/blockchain/core/
-      Main.java                 # Entry point
-      protocol/                 # Transactions, Blocks, Merkle, Codecs
-      consensus/                # ProofOfWork
-      state/                    # StateStore
-      mempool/                  # Mempool, TxValidator
-      storage/                  # InMemoryChainStore, RocksDBChainStore
-      node/                     # Node, BlockProducer, GenesisBuilder
-      rpc/                      # Minimal HTTP RPC (optional)
-    test/java/                  # JUnit tests
-gradlew, gradlew.bat            # Gradle wrapper
-build.gradle.kts                # Module build
-settings.gradle.kts             # Project settings
-```
-
----
-
-## ⚙️ Requirements
-
-- JDK 21 (tested), works on JDK ≥17  
-- Gradle 9 (wrapper included)  
-- RocksDB JNI (bundled, no manual install)
-
----
-
-## 🚦 Quick Start
-
-Clone & run:
+## Quick Start (Demo Mode)
 
 ```bash
-git clone https://github.com/Jiany-S/java-blockchain
-cd java-blockchain
-./gradlew :app:run --args="./data/chain"
+./gradlew :app:run --args="--data-dir=./app/data/chain"
 ```
 
-Windows (PowerShell):
+The default run executes a short demo: creates two wallets, submits a sample transaction, mines a block, prints metrics, and exits after five seconds. Wallets are persisted under `./app/data/chain/wallets`.
 
-```powershell
-git clone https://github.com/Jiany-S/java-blockchain
-cd java-blockchain
-.\gradlew :app:run --args=".\data\chain"
+To inspect the available CLI options:
+
+```bash
+./gradlew :app:run --args="--help"
 ```
 
-Output (first run):
+## CLI Overview
 
+| Option | Description |
+| --- | --- |
+| `--data-dir=<path>` | Directory for blockchain data (default `./data/chain`) |
+| `--reset-chain` | Delete chain data (wallets preserved) before starting |
+| `--regen-genesis` | Regenerate `genesis-alloc.json` from known wallets |
+| `--keep-alive` | Keep the node running until interrupted |
+| `--demo / --no-demo` | Enable (default) or disable the demo transaction flow |
+| `--demo-duration-ms=<ms>` | When not in keep-alive mode, how long to wait before shutting down (default 5000) |
+| `--enable-api` | Start the REST API (default bind `127.0.0.1:8080`) |
+| `--api-bind=<host>` | Bind address for the REST API |
+| `--api-port=<port>` | REST API port (default 8080) |
+| `--api-token=<token>` | Require Bearer or `X-API-Key` token for the REST API |
+| `--enable-rpc` | Start the RPC server (default bind `127.0.0.1:9090`) |
+| `--rpc-bind=<host>` | Bind address for the RPC server |
+| `--rpc-port=<port>` | RPC port (default 9090) |
+| `--rpc-token=<token>` | Require Bearer or `X-API-Key` token for the RPC server |
+| `--no-p2p` | Disable the Netty listener (enabled by default) |
+| `--p2p-port=<port>` | P2P port (default 9000) |
+
+Environment overrides:
+- `JAVA_CHAIN_DATA_DIR`, `JAVA_CHAIN_API_TOKEN`, `JAVA_CHAIN_RPC_TOKEN`
+- `JAVA_CHAIN_ENABLE_API`, `JAVA_CHAIN_ENABLE_RPC`, `JAVA_CHAIN_ENABLE_P2P`
+- `JAVA_CHAIN_KEEP_ALIVE`
+
+## Security
+
+Both REST and RPC services support token-based authentication. Set a token via CLI (`--api-token`, `--rpc-token`) or environment variables (`JAVA_CHAIN_API_TOKEN`, `JAVA_CHAIN_RPC_TOKEN`). Requests must include either:
+
+- `Authorization: Bearer <token>` or
+- `X-API-Key: <token>`
+
+If no token is provided, the endpoint is public. In production deployments always provide a token (and bind to a private interface or behind a reverse proxy).
+
+## REST & RPC APIs
+
+- REST base endpoints: `/balance`, `/submit`, `/chain`, `/wallets`, `/wallets/send`
+- RPC endpoints: `/status`, `/balance`, `/tx`, `/wallet/list`, `/wallet/create`, `/wallet/send`
+- OpenAPI descriptions: `/openapi.json` on both servers
+
+Example curl with auth:
+
+```bash
+curl -H "Authorization: Bearer $API_TOKEN" http://localhost:8080/balance?address=<hex-address>
 ```
-INFO: Starting height: 0
-INFO: Produced block? true (+1) in 42 ms
-INFO: Ending height: 1
-INFO: Data dir: ./data/chain
-INFO: Restart this app and you should see the same or higher height.
+
+## Metrics
+
+Prometheus-compatible metrics are available at `/metrics`. The `http.server.requests` series records request latency, and mining statistics are exposed via `blocks.mined` and `block.mining.time`.
+
+## Docker
+
+Build and run using Docker Compose:
+
+```bash
+cd docker
+docker compose up --build
 ```
 
----
+Environment variables in `docker-compose.yml` control ports and tokens (set `API_TOKEN`/`RPC_TOKEN` before exposing the services). Data is stored under `app/data` on the host.
 
-## 🔍 Example Workflow
+## Developer Scripts
 
-1. Start node → creates genesis at height 0  
-2. Add demo transaction (`alice123456 → bob654321`)  
-3. Node mines block 1 with tx  
-4. Restart → state is restored from RocksDB, balances preserved  
+- `scripts/run-dev.sh` (macOS/Linux)
+- `scripts/run-dev.ps1` (Windows PowerShell)
 
----
+Both scripts build the distribution if necessary and run the node with sensible defaults (`--keep-alive`, REST/RPC enabled, binds on `0.0.0.0`). Override behaviour with environment variables such as `API_TOKEN`, `RPC_TOKEN`, `RUN_DEMO=false`, etc.
 
-## 📊 Roadmap
-
-- ✅ Transaction + block protocol  
-- ✅ Proof-of-Work mining  
-- ✅ StateStore + mempool  
-- ✅ RocksDB persistence  
-- ✅ Demo RPC API  
-- ⏳ Block validation (Merkle, timestamp, parent linkage)  
-- ⏳ Chain reorg + fork choice (heaviest-tip)  
-- ⏳ ECDSA signatures (BouncyCastle)  
-- ⏳ P2P gossip (Netty)  
-- ⏳ Docker localnet with multiple nodes  
-
----
-
-## 🧪 Tests
-
-Run unit tests:
+## Testing
 
 ```bash
 ./gradlew :app:test
 ```
 
-Includes:
-- Transaction round-trip (serialize/deserialize)
-- Proof-of-Work meetsTarget / mine
-- State apply/revert
-- Chain store behavior
+Unit tests cover transaction serialization, PoW target checks, state replay, and chain store behaviour.
 
----
+## Contributing
 
-## 🤝 Contributing
+Issues and pull requests are welcome. Please keep patches focused, include tests where possible, and run `./gradlew :app:compileJava :app:test` before submitting.
 
-Contributions are welcome. Please keep PRs small, add tests, and follow the existing clean coding style.
+## License
 
----
-
-## 📜 License
-
-MIT. See `LICENSE`.
-
----
-
-## 📎 Direct Download
-
-- **Download ZIP** (no Git needed):  
-  👉 [Download Source Code (zip)](https://github.com/Jiany-S/java-blockchain/archive/refs/heads/main.zip)
-
-- Or clone with Git:
-  ```bash
-  git clone https://github.com/Jiany-S/java-blockchain
-  ```
-
----
+MIT License. See [LICENSE](LICENSE).

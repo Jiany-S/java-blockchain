@@ -1,0 +1,11 @@
+.git
+.gitignore
+.gradle
+build
+app/build
+out
+.vscode
+.idea
+*.iml
+Dockerfile
+**/.DS_Store
