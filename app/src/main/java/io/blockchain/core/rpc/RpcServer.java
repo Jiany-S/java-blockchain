@@ -1,226 +1,468 @@
 package io.blockchain.core.rpc;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
+import io.blockchain.core.metrics.HttpMetrics;
 import io.blockchain.core.node.Node;
 import io.blockchain.core.protocol.Transaction;
 import io.blockchain.core.wallet.Wallet;
 import io.blockchain.core.wallet.WalletStore;
+import io.blockchain.core.wallet.WalletStore.WalletInfo;
 
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.URI;
+import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
-import java.util.*;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.Executors;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * Very small HTTP API (no external deps):
- *  - GET  /status
- *  - GET  /balance?addr=<address>
- *  - POST /tx   { "from":"...", "to":"...", "amountMinor":123, "feeMinor":1, "nonce":0 }
+ * Minimal RPC server for interacting with the node over HTTP/JSON.
  */
 public final class RpcServer {
     private static final Logger LOG = Logger.getLogger(RpcServer.class.getName());
+    private static final byte[] OPENAPI_SPEC = """
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Java Blockchain RPC API",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/status": {
+      "get": {
+        "summary": "Node status and head information",
+        "responses": { "200": { "description": "Status response" } }
+      }
+    },
+    "/balance": {
+      "get": {
+        "summary": "Balance and nonce for an address",
+        "parameters": [
+          {
+            "name": "addr",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": { "description": "Balance response" },
+          "400": { "description": "Missing or invalid parameters" }
+        }
+      }
+    },
+    "/tx": {
+      "post": {
+        "summary": "Submit a transaction body",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/TxRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Transaction accepted" },
+          "400": { "description": "Invalid transaction" }
+        }
+      }
+    },
+    "/wallet/list": {
+      "get": {
+        "summary": "List wallet aliases and addresses",
+        "responses": { "200": { "description": "Wallet list" } }
+      }
+    },
+    "/wallet/create": {
+      "post": {
+        "summary": "Create a new wallet alias",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateWallet" }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "Wallet created" },
+          "400": { "description": "Validation error" }
+        }
+      }
+    },
+    "/wallet/send": {
+      "post": {
+        "summary": "Sign and submit a transaction using a stored wallet",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/WalletSend" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Transaction accepted" },
+          "400": { "description": "Validation error" },
+          "404": { "description": "Wallet not found" }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "summary": "Prometheus metrics scrape",
+        "responses": { "200": { "description": "Metrics in Prometheus exposition format" } }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "summary": "Return this OpenAPI document",
+        "responses": { "200": { "description": "OpenAPI specification" } }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "TxRequest": {
+        "type": "object",
+        "required": ["from", "to", "amountMinor", "feeMinor", "nonce"],
+        "properties": {
+          "from": { "type": "string" },
+          "to": { "type": "string" },
+          "amountMinor": { "type": "integer", "format": "int64" },
+          "feeMinor": { "type": "integer", "format": "int64" },
+          "nonce": { "type": "integer", "format": "int64" },
+          "payloadHex": { "type": "string" }
+        }
+      },
+      "CreateWallet": {
+        "type": "object",
+        "required": ["alias"],
+        "properties": {
+          "alias": { "type": "string" },
+          "passphrase": { "type": "string" }
+        }
+      },
+      "WalletSend": {
+        "type": "object",
+        "required": ["fromAlias", "to", "amountMinor", "feeMinor"],
+        "properties": {
+          "fromAlias": { "type": "string" },
+          "to": { "type": "string" },
+          "amountMinor": { "type": "integer", "format": "int64" },
+          "feeMinor": { "type": "integer", "format": "int64" },
+          "passphrase": { "type": "string" },
+          "payloadHex": { "type": "string" }
+        }
+      }
+    }
+  }
+}
+""".getBytes(StandardCharsets.UTF_8);
 
     private final Node node;
     private final WalletStore walletStore;
     private final int port;
+    private final ObjectMapper mapper;
     private HttpServer server;
 
     public RpcServer(Node node, WalletStore walletStore, int port) {
         this.node = node;
         this.walletStore = walletStore;
         this.port = port;
+        this.mapper = new ObjectMapper()
+                .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
     }
 
     public void start() throws IOException {
         server = HttpServer.create(new InetSocketAddress(port), 0);
-        server.createContext("/status", new StatusHandler(node));
-        server.createContext("/balance", new BalanceHandler(node));
-        server.createContext("/tx", new TxHandler(node));
-        server.createContext("/wallet/list", new WalletListHandler(walletStore));
-        server.createContext("/wallet/create", new WalletCreateHandler(walletStore));
-        server.createContext("/wallet/send", new WalletSendHandler(node, walletStore));
-        server.setExecutor(java.util.concurrent.Executors.newCachedThreadPool());
+        server.createContext("/status", new StatusHandler());
+        server.createContext("/balance", new BalanceHandler());
+        server.createContext("/tx", new TxHandler());
+        server.createContext("/wallet/list", new WalletListHandler());
+        server.createContext("/wallet/create", new WalletCreateHandler());
+        server.createContext("/wallet/send", new WalletSendHandler());
         server.createContext("/metrics", new MetricsHandler());
+        server.createContext("/openapi.json", new OpenApiHandler());
+        server.setExecutor(Executors.newCachedThreadPool());
         server.start();
+        LOG.info("RPC server started on port " + port);
     }
 
-    public void stop() { if (server != null) server.stop(0); }
+    public void stop() {
+        if (server != null) {
+            server.stop(0);
+        }
+    }
 
-    // ---------------- handlers ----------------
-
-    static final class StatusHandler implements HttpHandler {
-        private final Node node;
-        StatusHandler(Node node){ this.node = node; }
-
-        public void handle(HttpExchange ex) throws IOException {
-            long height = -1;
-            String headHex = "null";
-            int mempoolSize = node.mempool().size();
+    final class StatusHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            String method = exchange.getRequestMethod();
+            String path = exchange.getHttpContext().getPath();
+            var sample = HttpMetrics.start(method, path);
+            int status = 500;
             try {
+                if (!"GET".equalsIgnoreCase(method)) {
+                    status = sendError(exchange, 405, "method_not_allowed", "Use GET for this endpoint");
+                    return;
+                }
+                long height = -1;
+                String headHex = "null";
                 Optional<byte[]> head = node.chain().getHead();
                 if (head.isPresent()) {
                     height = node.chain().getHeight(head.get()).orElse(-1L);
                     headHex = toHex(head.get());
                 }
-                respondJson(ex, 200, "{ \"height\": " + height + ", \"head\": \"" + headHex + "\", \"mempool\": " + mempoolSize + " }");
+                ObjectNode resp = mapper.createObjectNode();
+                resp.put("height", height);
+                resp.put("head", headHex);
+                resp.put("mempool", node.mempool().size());
+                status = sendJson(exchange, 200, resp);
             } catch (Exception e) {
-                respondJson(ex, 500, "{ \"error\": \"" + escape(e.getMessage()) + "\" }");
+                LOG.log(Level.WARNING, "Status handler failed", e);
+                status = sendError(exchange, 500, "internal_error", "Unexpected server error");
+            } finally {
+                HttpMetrics.stop(sample, method, path, status);
+                exchange.close();
             }
         }
     }
 
-    static final class BalanceHandler implements HttpHandler {
-        private final Node node;
-        BalanceHandler(Node node){ this.node = node; }
-
-        public void handle(HttpExchange ex) throws IOException {
-            Map<String,String> q = queryParams(ex.getRequestURI());
-            String addr = q.get("addr");
-            if (addr == null || addr.isEmpty()) {
-                respondJson(ex, 400, "{ \"error\": \"missing addr\" }");
-                return;
-            }
-            long bal = node.state().getBalance(addr);
-            long nonce = node.state().getNonce(addr);
-            respondJson(ex, 200, "{ \"address\":\""+escape(addr)+"\", \"balance\":"+bal+", \"nonce\":"+nonce+" }");
-        }
-    }
-
-    static final class TxHandler implements HttpHandler {
-        private final Node node;
-        TxHandler(Node node){ this.node = node; }
-
-        public void handle(HttpExchange ex) throws IOException {
-            if (!"POST".equalsIgnoreCase(ex.getRequestMethod())) {
-                respondJson(ex, 405, "{ \"error\":\"use POST\" }");
-                return;
-            }
-            String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8).trim();
+    final class BalanceHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            String method = exchange.getRequestMethod();
+            String path = exchange.getHttpContext().getPath();
+            var sample = HttpMetrics.start(method, path);
+            int status = 500;
             try {
-                Map<String,String> m = parseSimpleJson(body);
-                String from = require(m, "from");
-                String to = require(m, "to");
-                long amount = Long.parseLong(require(m, "amountMinor"));
-                long fee = Long.parseLong(require(m, "feeMinor"));
-                long nonce = Long.parseLong(require(m, "nonce"));
-
-                Transaction tx = Transaction.builder()
-                        .from(from).to(to)
-                        .amountMinor(amount).feeMinor(fee).nonce(nonce)
-                        .build();
-
-                node.mempool().add(tx);
-                respondJson(ex, 200, "{ \"accepted\": true, \"id\": \""+ toHex(tx.id()) +"\" }");
-            } catch (Exception e) {
-                respondJson(ex, 400, "{ \"accepted\": false, \"error\": \"" + escape(e.getMessage()) + "\" }");
-            }
-        }
-    }
-
-    static final class WalletListHandler implements HttpHandler {
-        private final WalletStore store;
-        WalletListHandler(WalletStore store) { this.store = store; }
-
-        public void handle(HttpExchange ex) throws IOException {
-            if (!"GET".equalsIgnoreCase(ex.getRequestMethod())) {
-                respondJson(ex, 405, "{ \"error\":\"use GET\" }");
-                return;
-            }
-            List<WalletStore.WalletInfo> infos = store.listWallets();
-            StringBuilder sb = new StringBuilder();
-            sb.append("{ \"wallets\": [");
-            for (int i = 0; i < infos.size(); i++) {
-                WalletStore.WalletInfo info = infos.get(i);
-                if (i > 0) sb.append(", ");
-                sb.append("{ \"alias\": \"").append(escape(info.alias)).append("\", \"address\": \"")
-                  .append(escape(info.address)).append("\", \"locked\": ").append(info.locked).append(" }");
-            }
-            sb.append("] }");
-            respondJson(ex, 200, sb.toString());
-        }
-    }
-
-    static final class WalletCreateHandler implements HttpHandler {
-        private final WalletStore store;
-        WalletCreateHandler(WalletStore store) { this.store = store; }
-
-        public void handle(HttpExchange ex) throws IOException {
-            if (!"POST".equalsIgnoreCase(ex.getRequestMethod())) {
-                respondJson(ex, 405, "{ \"error\":\"use POST\" }");
-                return;
-            }
-            String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8).trim();
-            try {
-                Map<String,String> m = parseSimpleJson(body);
-                String alias = require(m, "alias");
-                char[] pass = toPassword(m.get("passphrase"));
-                try {
-                    store.createWallet(alias, pass);
-                } finally {
-                    if (pass != null) Arrays.fill(pass, '\0');
+                if (!"GET".equalsIgnoreCase(method)) {
+                    status = sendError(exchange, 405, "method_not_allowed", "Use GET for this endpoint");
+                    return;
                 }
-                WalletStore.WalletInfo info = store.info(alias);
-                respondJson(ex, 201, "{ \"alias\": \"" + escape(info.alias) + "\", \"address\": \""
-                        + escape(info.address) + "\", \"locked\": " + info.locked + " }");
+                String address = queryParam(exchange.getRequestURI(), "addr");
+                if (address == null || address.isBlank()) {
+                    status = sendError(exchange, 400, "missing_addr", "Query parameter 'addr' is required");
+                    return;
+                }
+                ObjectNode resp = mapper.createObjectNode();
+                resp.put("address", address);
+                resp.put("balance", node.state().getBalance(address));
+                resp.put("nonce", node.state().getNonce(address));
+                status = sendJson(exchange, 200, resp);
             } catch (Exception e) {
-                respondJson(ex, 400, "{ \"error\": \"" + escape(e.getMessage()) + "\" }");
+                LOG.log(Level.WARNING, "Balance handler failed", e);
+                status = sendError(exchange, 500, "internal_error", "Unexpected server error");
+            } finally {
+                HttpMetrics.stop(sample, method, path, status);
+                exchange.close();
             }
         }
     }
 
-    static final class WalletSendHandler implements HttpHandler {
-        private final Node node;
-        private final WalletStore store;
-        WalletSendHandler(Node node, WalletStore store) {
-            this.node = node;
-            this.store = store;
-        }
-
-        public void handle(HttpExchange ex) throws IOException {
-            if (!"POST".equalsIgnoreCase(ex.getRequestMethod())) {
-                respondJson(ex, 405, "{ \"error\":\"use POST\" }");
-                return;
-            }
-            String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8).trim();
+    final class TxHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            String method = exchange.getRequestMethod();
+            String path = exchange.getHttpContext().getPath();
+            var sample = HttpMetrics.start(method, path);
+            int status = 500;
             try {
-                Map<String,String> m = parseSimpleJson(body);
-                String alias = require(m, "fromAlias");
-                String to = require(m, "to");
-                long amount = Long.parseLong(require(m, "amountMinor"));
-                long fee = Long.parseLong(require(m, "feeMinor"));
-                String payloadHex = m.getOrDefault("payloadHex", "");
-                char[] pass = toPassword(m.get("passphrase"));
-                Wallet wallet;
+                if (!"POST".equalsIgnoreCase(method)) {
+                    status = sendError(exchange, 405, "method_not_allowed", "Use POST for this endpoint");
+                    return;
+                }
+                TxRequest req;
                 try {
-                    if (pass != null) {
-                        wallet = store.getWallet(alias, pass);
-                    } else {
-                        wallet = store.getWallet(alias);
+                    req = mapper.readValue(exchange.getRequestBody(), TxRequest.class);
+                } catch (JsonProcessingException e) {
+                    status = sendError(exchange, 400, "invalid_json", "Failed to parse transaction request");
+                    return;
+                }
+                if (req == null || req.from == null || req.to == null) {
+                    status = sendError(exchange, 400, "missing_fields", "Fields 'from' and 'to' are required");
+                    return;
+                }
+                try {
+                    Transaction.Builder builder = Transaction.builder()
+                            .from(req.from)
+                            .to(req.to)
+                            .amountMinor(req.amountMinor)
+                            .feeMinor(req.feeMinor)
+                            .nonce(req.nonce);
+                    if (req.payloadHex != null) {
+                        builder.payload(parseHex(req.payloadHex));
                     }
+                    Transaction tx = builder.build();
+                    node.mempool().add(tx);
+                    ObjectNode resp = mapper.createObjectNode()
+                            .put("accepted", true)
+                            .put("id", toHex(tx.id()));
+                    status = sendJson(exchange, 200, resp);
+                } catch (Exception e) {
+                    status = sendError(exchange, 400, "invalid_transaction", Optional.ofNullable(e.getMessage()).orElse("Rejected transaction"));
+                }
+            } finally {
+                HttpMetrics.stop(sample, method, path, status);
+                exchange.close();
+            }
+        }
+    }
+
+    final class WalletListHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            String method = exchange.getRequestMethod();
+            String path = exchange.getHttpContext().getPath();
+            var sample = HttpMetrics.start(method, path);
+            int status = 500;
+            try {
+                if (!"GET".equalsIgnoreCase(method)) {
+                    status = sendError(exchange, 405, "method_not_allowed", "Use GET for this endpoint");
+                    return;
+                }
+                List<WalletInfo> infos = walletStore.listWallets();
+                ArrayNode array = mapper.createArrayNode();
+                for (WalletInfo info : infos) {
+                    array.addObject()
+                            .put("alias", info.alias)
+                            .put("address", info.address)
+                            .put("locked", info.locked);
+                }
+                ObjectNode resp = mapper.createObjectNode().set("wallets", array);
+                status = sendJson(exchange, 200, resp);
+            } finally {
+                HttpMetrics.stop(sample, method, path, status);
+                exchange.close();
+            }
+        }
+    }
+
+    final class WalletCreateHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            String method = exchange.getRequestMethod();
+            String path = exchange.getHttpContext().getPath();
+            var sample = HttpMetrics.start(method, path);
+            int status = 500;
+            try {
+                if (!"POST".equalsIgnoreCase(method)) {
+                    status = sendError(exchange, 405, "method_not_allowed", "Use POST for this endpoint");
+                    return;
+                }
+                WalletCreateRequest req;
+                try {
+                    req = mapper.readValue(exchange.getRequestBody(), WalletCreateRequest.class);
+                } catch (JsonProcessingException e) {
+                    status = sendError(exchange, 400, "invalid_json", "Failed to parse create wallet request");
+                    return;
+                }
+                if (req == null || req.alias == null || req.alias.isBlank()) {
+                    status = sendError(exchange, 400, "invalid_alias", "Field 'alias' is required");
+                    return;
+                }
+                char[] pass = toPassword(req.passphrase);
+                try {
+                    walletStore.createWallet(req.alias, pass);
+                    WalletInfo info = walletStore.info(req.alias);
+                    ObjectNode resp = mapper.createObjectNode()
+                            .put("alias", info.alias)
+                            .put("address", info.address)
+                            .put("locked", info.locked);
+                    status = sendJson(exchange, 201, resp);
+                } catch (Exception e) {
+                    status = sendError(exchange, 400, "wallet_creation_failed", Optional.ofNullable(e.getMessage()).orElse("Unable to create wallet"));
                 } finally {
-                    if (pass != null) Arrays.fill(pass, '\0');
+                    if (pass != null) {
+                        Arrays.fill(pass, '\0');
+                    }
                 }
+            } finally {
+                HttpMetrics.stop(sample, method, path, status);
+                exchange.close();
+            }
+        }
+    }
+
+    final class WalletSendHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            String method = exchange.getRequestMethod();
+            String path = exchange.getHttpContext().getPath();
+            var sample = HttpMetrics.start(method, path);
+            int status = 500;
+            try {
+                if (!"POST".equalsIgnoreCase(method)) {
+                    status = sendError(exchange, 405, "method_not_allowed", "Use POST for this endpoint");
+                    return;
+                }
+                WalletSendRequest req;
+                try {
+                    req = mapper.readValue(exchange.getRequestBody(), WalletSendRequest.class);
+                } catch (JsonProcessingException e) {
+                    status = sendError(exchange, 400, "invalid_json", "Failed to parse wallet send request");
+                    return;
+                }
+                if (req == null || req.fromAlias == null || req.fromAlias.isBlank() || req.to == null || req.to.isBlank()) {
+                    status = sendError(exchange, 400, "missing_fields", "Fields 'fromAlias' and 'to' are required");
+                    return;
+                }
+                if (req.amountMinor <= 0 || req.feeMinor < 0) {
+                    status = sendError(exchange, 400, "invalid_amount", "Amount must be > 0 and fee >= 0");
+                    return;
+                }
+
+                char[] pass = toPassword(req.passphrase);
+                Wallet wallet = null;
+                try {
+                    wallet = pass != null ? walletStore.getWallet(req.fromAlias, pass) : walletStore.getWallet(req.fromAlias);
+                } catch (IllegalStateException e) {
+                    status = sendError(exchange, 403, "wallet_locked", e.getMessage());
+                    return;
+                } catch (Exception e) {
+                    status = sendError(exchange, 400, "wallet_error", Optional.ofNullable(e.getMessage()).orElse("Unable to unlock wallet"));
+                    return;
+                } finally {
+                    if (pass != null) {
+                        Arrays.fill(pass, '\0');
+                    }
+                }
+
                 if (wallet == null) {
-                    respondJson(ex, 404, "{ \"error\": \"wallet not found\" }");
+                    status = sendError(exchange, 404, "wallet_not_found", "No wallet registered for alias " + req.fromAlias);
                     return;
                 }
-                byte[] payload = parseHex(payloadHex);
-                if (amount <= 0 || fee < 0) {
-                    respondJson(ex, 400, "{ \"error\": \"invalid amount or fee\" }");
+
+                byte[] payload;
+                try {
+                    payload = parseHex(req.payloadHex);
+                } catch (IllegalArgumentException e) {
+                    status = sendError(exchange, 400, "invalid_payload", e.getMessage());
                     return;
                 }
+
                 long nonce = node.state().getNonce(wallet.getAddress());
                 long timestamp = System.currentTimeMillis();
                 Transaction unsignedTx = Transaction.builder()
                         .from(wallet.getAddress())
-                        .to(to)
-                        .amountMinor(amount)
-                        .feeMinor(fee)
+                        .to(req.to)
+                        .amountMinor(req.amountMinor)
+                        .feeMinor(req.feeMinor)
                         .nonce(nonce)
                         .timestamp(timestamp)
                         .payload(payload)
@@ -238,78 +480,88 @@ public final class RpcServer {
                         .publicKey(wallet.getPublicKey())
                         .build();
                 node.mempool().add(signedTx);
-                respondJson(ex, 200, "{ \"accepted\": true, \"txId\": \"" + toHex(signedTx.id()) + "\", \"nonce\": " + signedTx.nonce() + " }");
-            } catch (IllegalStateException e) {
-                respondJson(ex, 403, "{ \"error\": \"" + escape(e.getMessage()) + "\" }");
-            } catch (Exception e) {
-                respondJson(ex, 400, "{ \"accepted\": false, \"error\": \"" + escape(e.getMessage()) + "\" }");
+
+                ObjectNode resp = mapper.createObjectNode()
+                        .put("accepted", true)
+                        .put("txId", toHex(signedTx.id()))
+                        .put("nonce", signedTx.nonce());
+                status = sendJson(exchange, 200, resp);
+            } finally {
+                HttpMetrics.stop(sample, method, path, status);
+                exchange.close();
             }
         }
     }
 
-    // ---------------- utils ----------------
-
-    private static void respondJson(HttpExchange ex, int code, String json) throws IOException {
-        byte[] b = json.getBytes(StandardCharsets.UTF_8);
-        ex.getResponseHeaders().set("Content-Type", "application/json");
-        ex.sendResponseHeaders(code, b.length);
-        try (OutputStream os = ex.getResponseBody()) { os.write(b); }
-    }
-
-    private static Map<String,String> queryParams(URI uri) {
-        Map<String,String> out = new HashMap<String,String>();
-        String q = uri.getQuery();
-        if (q == null || q.isEmpty()) return out;
-        String[] parts = q.split("&");
-        for (int i=0;i<parts.length;i++){
-            String[] kv = parts[i].split("=", 2);
-            if (kv.length == 2) out.put(urlDecode(kv[0]), urlDecode(kv[1]));
+    final class OpenApiHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            String method = exchange.getRequestMethod();
+            String path = exchange.getHttpContext().getPath();
+            var sample = HttpMetrics.start(method, path);
+            int status = 500;
+            try {
+                if (!"GET".equalsIgnoreCase(method)) {
+                    status = sendError(exchange, 405, "method_not_allowed", "Use GET for this endpoint");
+                    return;
+                }
+                status = sendJson(exchange, 200, OPENAPI_SPEC);
+            } finally {
+                HttpMetrics.stop(sample, method, path, status);
+                exchange.close();
+            }
         }
-        return out;
     }
 
-    private static String urlDecode(String s){
-        try { return java.net.URLDecoder.decode(s, "UTF-8"); }
-        catch (Exception e){ return s; }
-    }
-
-    /** ultra-simple JSON parser for a flat object with string/number fields */
-    private static Map<String,String> parseSimpleJson(String json) {
-        Map<String,String> out = new HashMap<String,String>();
-        String s = json.trim();
-        if (!s.startsWith("{") || !s.endsWith("}")) throw new IllegalArgumentException("bad json");
-        s = s.substring(1, s.length()-1).trim();
-        if (s.isEmpty()) return out;
-        // split on commas that separate pairs (no nested objects expected)
-        String[] pairs = s.split("\\s*,\\s*");
-        for (int i=0;i<pairs.length;i++){
-            String[] kv = pairs[i].split("\\s*:\\s*", 2);
-            if (kv.length != 2) continue;
-            String k = stripQuotes(kv[0].trim());
-            String v = kv[1].trim();
-            if (v.startsWith("\"") && v.endsWith("\"")) v = stripQuotes(v);
-            out.put(k, v);
+    private int sendJson(HttpExchange exchange, int status, Object body) throws IOException {
+        byte[] payload;
+        if (body instanceof byte[] bytes) {
+            payload = bytes;
+        } else if (body instanceof String str) {
+            payload = str.getBytes(StandardCharsets.UTF_8);
+        } else {
+            payload = mapper.writeValueAsBytes(body);
         }
-        return out;
-    }
-
-    private static String stripQuotes(String s){
-        if (s.startsWith("\"") && s.endsWith("\"") && s.length() >= 2) {
-            return s.substring(1, s.length()-1);
+        exchange.getResponseHeaders().set("Content-Type", "application/json");
+        exchange.sendResponseHeaders(status, payload.length);
+        try (OutputStream os = exchange.getResponseBody()) {
+            os.write(payload);
         }
-        return s;
+        return status;
     }
 
-    private static String require(Map<String,String> m, String key){
-        String v = m.get(key);
-        if (v == null) throw new IllegalArgumentException("missing field: " + key);
-        return v;
+    private int sendError(HttpExchange exchange, int status, String code, String message) throws IOException {
+        ObjectNode node = mapper.createObjectNode();
+        node.put("error", code);
+        node.put("message", message);
+        return sendJson(exchange, status, node);
+    }
+
+    private String queryParam(URI uri, String name) {
+        String query = uri.getRawQuery();
+        if (query == null) {
+            return null;
+        }
+        for (String pair : query.split("&")) {
+            if (pair.isEmpty()) {
+                continue;
+            }
+            String[] kv = pair.split("=", 2);
+            if (kv.length != 2) {
+                continue;
+            }
+            String key = URLDecoder.decode(kv[0], StandardCharsets.UTF_8);
+            if (name.equals(key)) {
+                return URLDecoder.decode(kv[1], StandardCharsets.UTF_8);
+            }
+        }
+        return null;
     }
 
     private static String toHex(byte[] bytes) {
         final char[] HEX = "0123456789abcdef".toCharArray();
         char[] out = new char[bytes.length * 2];
-        for (int i = 0, j=0; i < bytes.length; i++) {
+        for (int i = 0, j = 0; i < bytes.length; i++) {
             int v = bytes[i] & 0xff;
             out[j++] = HEX[v >>> 4];
             out[j++] = HEX[v & 0x0f];
@@ -318,7 +570,7 @@ public final class RpcServer {
     }
 
     private static byte[] parseHex(String hex) {
-        if (hex == null || hex.isEmpty()) {
+        if (hex == null || hex.isBlank()) {
             return new byte[0];
         }
         String normalized = hex.startsWith("0x") || hex.startsWith("0X") ? hex.substring(2) : hex;
@@ -338,12 +590,30 @@ public final class RpcServer {
         return out;
     }
 
-    private static String escape(String s){
-        if (s == null) return "";
-        return s.replace("\\", "\\\\").replace("\"", "\\\"");
-    }
-
     private static char[] toPassword(String value) {
         return value != null && !value.isEmpty() ? value.toCharArray() : null;
+    }
+
+    private static class TxRequest {
+        public String from;
+        public String to;
+        public long amountMinor;
+        public long feeMinor;
+        public long nonce;
+        public String payloadHex;
+    }
+
+    private static class WalletCreateRequest {
+        public String alias;
+        public String passphrase;
+    }
+
+    private static class WalletSendRequest {
+        public String fromAlias;
+        public String to;
+        public long amountMinor;
+        public long feeMinor;
+        public String passphrase;
+        public String payloadHex;
     }
 }
