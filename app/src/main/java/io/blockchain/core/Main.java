@@ -268,7 +268,7 @@ public class Main {
                 .orElse(-1L);
     }
 
-    private record CliOptions(
+    static record CliOptions(
             boolean showHelp,
             String errorMessage,
             Path dataDir,
