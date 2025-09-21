@@ -4,15 +4,15 @@ A minimal blockchain node written in Java. It implements a simple account-based 
 
 ## Features
 
-- **Protocol & Consensus** – transactions with nonce/fee/signature fields, block headers with Merkle roots, configurable PoW difficulty
-- **State Management** – account balances and nonces, deterministic replay from the persisted chain, demo flow for quick experiments
-- **Storage** – RocksDB chain store (with an in-memory implementation for tests)
-- **Wallets** – persistent EC key generation, optional passphrase encryption, automatic address derivation
-- **APIs** –
+- **Protocol & Consensus** ï¿½ transactions with nonce/fee/signature fields, block headers with Merkle roots, configurable PoW difficulty
+- **State Management** ï¿½ account balances and nonces, deterministic replay from the persisted chain, demo flow for quick experiments
+- **Storage** ï¿½ RocksDB chain store (with an in-memory implementation for tests)
+- **Wallets** ï¿½ persistent EC key generation, optional passphrase encryption, automatic address derivation
+- **APIs** ï¿½
   - REST API (OpenAPI served at `/openapi.json`)
   - JSON-style RPC endpoints
   - Prometheus metrics at `/metrics`
-- **Tooling** – Gradle build, cross-platform dev scripts, Docker image & docker-compose example
+- **Tooling** ï¿½ Gradle build, cross-platform dev scripts, Docker image & docker-compose example
 
 ## Requirements
 
@@ -56,8 +56,8 @@ To inspect the available CLI options:
 | `--p2p-port=<port>` | P2P port (default 9000) |
 
 Environment overrides:
-- `JAVA_CHAIN_DATA_DIR`, `JAVA_CHAIN_API_TOKEN`, `JAVA_CHAIN_RPC_TOKEN`
-- `JAVA_CHAIN_ENABLE_API`, `JAVA_CHAIN_ENABLE_RPC`, `JAVA_CHAIN_ENABLE_P2P`
+- `JAVA_CHAIN_DATA_DIR`, `JAVA_CHAIN_API_TOKEN`, `JAVA_CHAIN_RPC_TOKEN`, `JAVA_CHAIN_NODE_ID`
+- `JAVA_CHAIN_ENABLE_API`, `JAVA_CHAIN_ENABLE_RPC`, `JAVA_CHAIN_ENABLE_P2P`, `JAVA_CHAIN_P2P_PEERS`
 - `JAVA_CHAIN_KEEP_ALIVE`
 
 ## Security

@@ -21,6 +21,8 @@ $rpcPort = if ($env:RPC_PORT) { [int]$env:RPC_PORT } else { 9090 }
 $p2pPort = if ($env:P2P_PORT) { [int]$env:P2P_PORT } else { 9000 }
 $apiToken = if ($env:API_TOKEN) { $env:API_TOKEN } else { $env:JAVA_CHAIN_API_TOKEN }
 $rpcToken = if ($env:RPC_TOKEN) { $env:RPC_TOKEN } else { $env:JAVA_CHAIN_RPC_TOKEN }
+$nodeId = if ($env:NODE_ID) { $env:NODE_ID } elseif ($env:JAVA_CHAIN_NODE_ID) { $env:JAVA_CHAIN_NODE_ID } else { $null }
+$p2pPeersEnv = if ($env:P2P_PEERS) { $env:P2P_PEERS } elseif ($env:JAVA_CHAIN_P2P_PEERS) { $env:JAVA_CHAIN_P2P_PEERS } else { $null }
 
 $cliArgs = New-Object System.Collections.Generic.List[string]
 $cliArgs.Add("--data-dir=$dataDir") | Out-Null
@@ -55,6 +57,16 @@ if ($env:ENABLE_P2P -and $env:ENABLE_P2P.ToLower() -eq 'false') {
     $cliArgs.Add("--p2p-port=$p2pPort") | Out-Null
 }
 
+
+if ($nodeId) {
+    $cliArgs.Add("--node-id=$nodeId") | Out-Null
+}
+if ($p2pPeersEnv) {
+    foreach ($peer in $p2pPeersEnv.Split(',', [System.StringSplitOptions]::RemoveEmptyEntries)) {
+        $trimmed = $peer.Trim()
+        if ($trimmed) { $cliArgs.Add("--p2p-peer=$trimmed") | Out-Null }
+    }
+}
 if ($env:RUN_DEMO -and $env:RUN_DEMO.ToLower() -eq 'false') {
     $cliArgs.Add("--no-demo") | Out-Null
 }

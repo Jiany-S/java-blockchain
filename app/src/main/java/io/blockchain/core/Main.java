@@ -1,3 +1,4 @@
+
 package io.blockchain.core;
 
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -16,10 +17,13 @@ import io.blockchain.core.wallet.WalletStore.WalletInfo;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.logging.Logger;
 import java.util.stream.Stream;
@@ -30,9 +34,9 @@ public class Main {
 
     public static void main(String[] args) throws Exception {
         CliOptions options = CliOptions.parse(args);
-        if (options.showHelp) {
+        if (options.showHelp()) {
             options.printHelp();
-            if (options.errorMessage != null) {
+            if (options.errorMessage() != null) {
                 System.exit(1);
             }
             return;
@@ -45,14 +49,14 @@ public class Main {
         Files.createDirectories(dataPath);
 
         Path walletsPath = dataPath.resolve("wallets");
-        WalletStore store = new WalletStore(walletsPath);
-        Wallet alice = ensureWallet(store, "alice");
-        Wallet bob = ensureWallet(store, "bob");
+        WalletStore walletStore = new WalletStore(walletsPath);
+        Wallet alice = ensureWallet(walletStore, "alice");
+        Wallet bob = ensureWallet(walletStore, "bob");
 
         Path allocFile = dataPath.resolve("genesis-alloc.json");
         Map<String, Long> allocations = loadAllocations(allocFile);
         if (options.regenGenesis()) {
-            allocations = regenerateAllocationsTemplate(store, allocFile);
+            allocations = regenerateAllocationsTemplate(walletStore, allocFile);
         }
 
         NodeConfig config = NodeConfig.defaultLocal();
@@ -87,14 +91,19 @@ public class Main {
             }
 
             if (options.enableP2p()) {
-                p2pServer = new P2pServer(options.p2pPort());
+                String nodeId = options.nodeId();
+                if (nodeId == null || nodeId.isBlank()) {
+                    nodeId = UUID.randomUUID().toString();
+                }
+                LOG.info("P2P node id=" + nodeId);
+                p2pServer = new P2pServer(nodeId, options.p2pPort());
                 p2pServer.start();
+                p2pServer.connect(options.p2pPeers());
             }
-
             if (options.enableApi()) {
                 apiServer = new ApiServer(
                         node,
-                        store,
+                        walletStore,
                         options.apiBind(),
                         options.apiPort(),
                         options.apiToken()
@@ -105,7 +114,7 @@ public class Main {
             if (options.enableRpc()) {
                 rpcServer = new RpcServer(
                         node,
-                        store,
+                        walletStore,
                         options.rpcBind(),
                         options.rpcPort(),
                         options.rpcToken()
@@ -116,8 +125,8 @@ public class Main {
             boolean keepAlive = options.keepAlive() || options.enableApi() || options.enableRpc();
             if (keepAlive) {
                 shutdownLatch = new CountDownLatch(1);
-                CountDownLatch finalLatch = shutdownLatch;
-                Runtime.getRuntime().addShutdownHook(new Thread(finalLatch::countDown, "java-blockchain-shutdown"));
+                CountDownLatch latchRef = shutdownLatch;
+                Runtime.getRuntime().addShutdownHook(new Thread(latchRef::countDown, "java-blockchain-shutdown"));
             }
 
             if (keepAlive) {
@@ -174,10 +183,7 @@ public class Main {
                 .publicKey(alice.getPublicKey())
                 .build();
 
-        if (Wallet.verifyWithKey(
-                signedTx.toUnsignedBytes(),
-                signedTx.signature(),
-                alice.getPublicKey())) {
+        if (Wallet.verifyWithKey(signedTx.toUnsignedBytes(), signedTx.signature(), alice.getPublicKey())) {
             node.mempool().add(signedTx);
             LOG.info("Tx signed and added to mempool");
         } else {
@@ -201,7 +207,6 @@ public class Main {
         LOG.info("Bob   balance=" + node.state().getBalance(bob.getAddress()));
         LOG.info("=== Metrics ===\n" + BlockMetrics.scrapeMetrics());
     }
-
     private static Wallet ensureWallet(WalletStore store, String alias) throws Exception {
         Wallet wallet = store.getWallet(alias);
         if (wallet != null) {
@@ -267,7 +272,6 @@ public class Main {
                 .map(h -> node.chain().getHeight(h).orElse(-1L))
                 .orElse(-1L);
     }
-
     static record CliOptions(
             boolean showHelp,
             String errorMessage,
@@ -286,7 +290,9 @@ public class Main {
             int rpcPort,
             String rpcToken,
             boolean enableP2p,
-            int p2pPort
+            int p2pPort,
+            String nodeId,
+            List<String> p2pPeers
     ) {
         static CliOptions parse(String[] args) {
             Path dataDir = envPath("JAVA_CHAIN_DATA_DIR", Path.of("./data/chain"));
@@ -305,6 +311,16 @@ public class Main {
             String rpcToken = System.getenv("JAVA_CHAIN_RPC_TOKEN");
             boolean enableP2p = !"false".equalsIgnoreCase(System.getenv("JAVA_CHAIN_ENABLE_P2P"));
             int p2pPort = envPort("JAVA_CHAIN_P2P_PORT", 9000);
+            String nodeId = envOrDefault("JAVA_CHAIN_NODE_ID", null);
+            List<String> p2pPeers = new ArrayList<>();
+            String peersEnv = System.getenv("JAVA_CHAIN_P2P_PEERS");
+            if (peersEnv != null && !peersEnv.isBlank()) {
+                for (String endpoint : peersEnv.split(",")) {
+                    if (endpoint != null && !endpoint.isBlank()) {
+                        p2pPeers.add(endpoint.trim());
+                    }
+                }
+            }
             boolean showHelp = false;
             String error = null;
 
@@ -369,6 +385,10 @@ public class Main {
                             showHelp = true;
                             error = ex.getMessage();
                         }
+                    } else if (arg.startsWith("--p2p-peer=")) {
+                        p2pPeers.add(arg.substring("--p2p-peer=".length()));
+                    } else if (arg.startsWith("--node-id=") || arg.startsWith("--p2p-node-id=")) {
+                        nodeId = arg.substring(arg.indexOf('=') + 1);
                     } else if (!arg.startsWith("--")) {
                         dataDir = Path.of(arg);
                     } else if (error == null) {
@@ -386,6 +406,11 @@ public class Main {
             }
 
             keepAlive = keepAlive || enableApi || enableRpc || "true".equalsIgnoreCase(System.getenv("JAVA_CHAIN_KEEP_ALIVE"));
+
+            if (nodeId != null && nodeId.isBlank()) {
+                nodeId = null;
+            }
+            List<String> peers = List.copyOf(p2pPeers);
 
             return new CliOptions(
                     showHelp,
@@ -405,7 +430,9 @@ public class Main {
                     rpcPort,
                     rpcToken,
                     enableP2p,
-                    p2pPort
+                    p2pPort,
+                    nodeId,
+                    peers
             );
         }
 
@@ -434,6 +461,8 @@ Options:
   --rpc-token=<token>        Require Bearer/X-API-Key token for the RPC server
   --no-p2p                   Disable the Netty P2P listener
   --p2p-port=<port>          Port for the P2P listener (default 9000)
+  --p2p-peer=<host:port>     Add a bootstrap peer (repeatable)
+  --node-id=<id>             Explicit node identifier advertised to peers
 
 Environment overrides:
   JAVA_CHAIN_DATA_DIR        Override --data-dir
@@ -441,6 +470,9 @@ Environment overrides:
   JAVA_CHAIN_RPC_TOKEN       Token for RPC auth (if --rpc-token not supplied)
   JAVA_CHAIN_ENABLE_API      Set to "true" to enable REST API without CLI flag
   JAVA_CHAIN_ENABLE_RPC      Set to "true" to enable RPC without CLI flag
+  JAVA_CHAIN_ENABLE_P2P      Set to "false" to disable P2P without CLI flag
+  JAVA_CHAIN_P2P_PEERS       Comma-separated bootstrap peers (host:port)
+  JAVA_CHAIN_NODE_ID         Override/generated node identifier
   JAVA_CHAIN_KEEP_ALIVE      Set to "true" to force keep-alive mode
 """);
         }

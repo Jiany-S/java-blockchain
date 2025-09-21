@@ -15,6 +15,8 @@ services:
       ENABLE_RPC: "true"
       ENABLE_P2P: "true"
       RUN_DEMO: "false"
+      # NODE_ID: node-1
+      # P2P_PEERS: host1:9000,host2:9001
       # Set API_TOKEN/RPC_TOKEN to secure the endpoints
       # API_TOKEN: change-me
       # RPC_TOKEN: change-me

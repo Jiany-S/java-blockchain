@@ -15,8 +15,11 @@ class MainCliOptionsTest {
         assertNull(options.errorMessage());
         assertFalse(options.enableApi());
         assertFalse(options.enableRpc());
+        assertTrue(options.enableP2p());
         assertTrue(options.demo());
         assertEquals(Path.of("./data/chain").normalize(), options.dataDir().normalize());
+        assertTrue(options.p2pPeers().isEmpty());
+        assertNull(options.nodeId());
     }
 
     @Test
@@ -31,7 +34,10 @@ class MainCliOptionsTest {
                 "--rpc-port=9191",
                 "--rpc-token=test-rpc",
                 "--no-demo",
-                "--keep-alive"
+                "--keep-alive",
+                "--p2p-peer=peer1:9000",
+                "--p2p-peer=peer2:9001",
+                "--node-id=my-node"
         });
         assertFalse(options.showHelp());
         assertTrue(options.enableApi());
@@ -44,6 +50,10 @@ class MainCliOptionsTest {
         assertEquals("test-rpc", options.rpcToken());
         assertFalse(options.demo());
         assertTrue(options.keepAlive());
+        assertEquals("my-node", options.nodeId());
+        assertEquals(2, options.p2pPeers().size());
+        assertTrue(options.p2pPeers().contains("peer1:9000"));
+        assertTrue(options.p2pPeers().contains("peer2:9001"));
     }
 
     @Test

@@ -9,6 +9,8 @@ RPC_PORT=${RPC_PORT:-9090}
 P2P_PORT=${P2P_PORT:-9000}
 API_TOKEN=${API_TOKEN:-${JAVA_CHAIN_API_TOKEN:-}}
 RPC_TOKEN=${RPC_TOKEN:-${JAVA_CHAIN_RPC_TOKEN:-}}
+NODE_ID=${NODE_ID:-${JAVA_CHAIN_NODE_ID:-}}
+P2P_PEERS=${P2P_PEERS:-${JAVA_CHAIN_P2P_PEERS:-}}
 ENABLE_API=${ENABLE_API:-true}
 ENABLE_RPC=${ENABLE_RPC:-true}
 ENABLE_P2P=${ENABLE_P2P:-true}
@@ -39,6 +41,18 @@ if [[ "$ENABLE_P2P" == "false" ]]; then
   CLI_ARGS+=("--no-p2p")
 else
   CLI_ARGS+=("--p2p-port=$P2P_PORT")
+fi
+
+if [[ -n "$NODE_ID" ]]; then
+  CLI_ARGS+=("--node-id=$NODE_ID")
+fi
+if [[ -n "$P2P_PEERS" ]]; then
+  IFS="," read -ra __peers <<< "$P2P_PEERS"
+  for peer in "${__peers[@]}"; do
+    if [[ -n "$peer" ]]; then
+      CLI_ARGS+=("--p2p-peer=${peer// /}")
+    fi
+  done
 fi
 
 if [[ "$RUN_DEMO" != "true" ]]; then
