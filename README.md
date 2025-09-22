@@ -118,3 +118,7 @@ Issues and pull requests are welcome. Please keep patches focused, include tests
 ## License
 
 MIT License. See [LICENSE](LICENSE).
+
+## Author
+
+Jiany Samara (Jiany-S)
