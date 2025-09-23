@@ -7,6 +7,7 @@ import io.blockchain.core.protocol.Block;
 import io.blockchain.core.protocol.BlockHeader;
 import io.blockchain.core.protocol.Merkle;
 import io.blockchain.core.protocol.Transaction;
+import io.blockchain.core.state.StateStore;
 import io.blockchain.core.storage.ChainStore;
 
 import java.util.List;
@@ -18,15 +19,17 @@ import java.util.Optional;
 public final class BlockProducer {
 
     private final ChainStore chain;
+    private final StateStore state;
     private final Mempool mempool;
     private final ProofOfWork pow;
     private final long difficultyBits;  // interpret as leading zero bits
     private final int maxTxPerBlock;
     private final long maxTries;
 
-    public BlockProducer(ChainStore chain, Mempool mempool, ProofOfWork pow,
+    public BlockProducer(ChainStore chain, StateStore state, Mempool mempool, ProofOfWork pow,
                          long difficultyBits, int maxTxPerBlock, long maxTries) {
         this.chain = chain;
+        this.state = state;
         this.mempool = mempool;
         this.pow = pow;
         this.difficultyBits = difficultyBits;
@@ -73,22 +76,37 @@ public final class BlockProducer {
             Optional<Block> mined = pow.mine(template, maxTries);
             if (!mined.isPresent()) {
                 // put txs back to mempool if mining failed (simple rollback)
+                requeueTransactions(txs);
                 return Optional.empty();
             }
             finalBlock = mined.get();
         }
 
-        // 6) Validate block before persisting
-        ConsensusRules.validateBlock(finalBlock, chain);
+        boolean stateApplied = false;
+        try {
+            // 6) Validate block before persisting
+            ConsensusRules.validateBlock(finalBlock, chain);
 
-        // 7) Persist and set head
-        chain.putBlock(finalBlock);
-        byte[] newHead = chain.getHead().orElse(null);
+            // 7) Apply state and persist
+            state.applyBlock(finalBlock);
+            stateApplied = true;
+            chain.putBlock(finalBlock);
+            byte[] newHead = chain.getHead().orElse(null);
 
-        // 8) Evict included txs from mempool
-        mempool.removeAll(txs);
+            // 8) Evict included txs from mempool
+            mempool.removeAll(txs);
 
-        return Optional.ofNullable(newHead);
+            return Optional.ofNullable(newHead);
+        } catch (RuntimeException e) {
+            if (stateApplied) {
+                try {
+                    state.revertBlock(finalBlock);
+                } catch (Exception ignored) {
+                }
+            }
+            requeueTransactions(txs);
+            throw e;
+        }
     }
 
     private static java.util.List<byte[]> idsOf(List<Transaction> txs) {
@@ -96,5 +114,17 @@ public final class BlockProducer {
         java.util.List<byte[]> out = new java.util.ArrayList<>(txs.size());
         for (Transaction tx : txs) out.add(tx.id());
         return out;
+    }
+
+    private void requeueTransactions(List<Transaction> txs) {
+        if (txs == null || txs.isEmpty()) {
+            return;
+        }
+        for (Transaction tx : txs) {
+            try {
+                mempool.add(tx);
+            } catch (RuntimeException ignored) {
+            }
+        }
     }
 }

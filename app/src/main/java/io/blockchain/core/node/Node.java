@@ -33,7 +33,7 @@ public final class Node {
         this.pow = pow;
         this.config = config;
         this.producer = new BlockProducer(
-                chain, mempool, pow,
+                chain, state, mempool, pow,
                 config.difficultyBits,
                 config.maxTxPerBlock,
                 config.maxPowTries
