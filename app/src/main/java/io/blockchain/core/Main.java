@@ -25,6 +25,10 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Stream;
 
@@ -78,6 +82,7 @@ public class Main {
         RpcServer rpcServer = null;
         P2pServer p2pServer = null;
         CountDownLatch shutdownLatch = null;
+        ScheduledExecutorService miner = null;
 
         try {
             node.start();
@@ -127,6 +132,7 @@ public class Main {
                 shutdownLatch = new CountDownLatch(1);
                 CountDownLatch latchRef = shutdownLatch;
                 Runtime.getRuntime().addShutdownHook(new Thread(latchRef::countDown, "java-blockchain-shutdown"));
+                miner = startMiner(node);
             }
 
             if (keepAlive) {
@@ -140,6 +146,9 @@ public class Main {
                 }
             }
         } finally {
+            if (miner != null) {
+                miner.shutdownNow();
+            }
             if (apiServer != null) {
                 apiServer.stop();
             }
@@ -151,6 +160,24 @@ public class Main {
             }
             node.close();
         }
+    }
+
+    private static ScheduledExecutorService startMiner(Node node) {
+        ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "java-blockchain-miner");
+            t.setDaemon(true);
+            return t;
+        });
+        Runnable task = () -> {
+            try {
+                Optional<byte[]> head = BlockMetrics.recordMining(node::tick);
+                head.ifPresent(h -> BlockMetrics.incrementBlocks());
+            } catch (Exception e) {
+                LOG.log(Level.WARNING, "Background mining tick failed", e);
+            }
+        };
+        executor.scheduleAtFixedRate(task, 0, 1, TimeUnit.SECONDS);
+        return executor;
     }
 
     private static void runDemoFlow(Node node, Wallet alice, Wallet bob) {

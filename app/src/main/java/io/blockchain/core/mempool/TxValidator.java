@@ -17,10 +17,24 @@ public class TxValidator {
         this.minFee = 0;
     }
 
-    public boolean validate(Transaction tx) {
-        if (state == null) return true;
-        if (tx.feeMinor() < minFee) return false;
-        long bal = state.getBalance(tx.from());
-        return bal >= (tx.amountMinor() + tx.feeMinor());
+    public void validate(Transaction tx) {
+        if (tx == null) {
+            throw new IllegalArgumentException("Transaction required");
+        }
+        if (state == null) {
+            return;
+        }
+        if (tx.feeMinor() < minFee) {
+            throw new IllegalArgumentException("Fee below minimum");
+        }
+        long required = tx.amountMinor() + tx.feeMinor();
+        long balance = state.getBalance(tx.from());
+        if (balance < required) {
+            throw new IllegalArgumentException("Insufficient balance");
+        }
+        long currentNonce = state.getNonce(tx.from());
+        if (tx.nonce() < currentNonce) {
+            throw new IllegalArgumentException("Nonce too low");
+        }
     }
 }
