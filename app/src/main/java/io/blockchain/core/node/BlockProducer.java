@@ -13,6 +13,8 @@ import io.blockchain.core.storage.ChainStore;
 import java.util.List;
 import java.util.Optional;
 
+import static java.lang.Math.addExact;
+
 /**
  * Builds a block from mempool, runs PoW (optional), validates it, and persists it.
  */
@@ -25,9 +27,12 @@ public final class BlockProducer {
     private final long difficultyBits;  // interpret as leading zero bits
     private final int maxTxPerBlock;
     private final long maxTries;
+    private final String minerAddress;
+    private final long blockRewardMinor;
 
     public BlockProducer(ChainStore chain, StateStore state, Mempool mempool, ProofOfWork pow,
-                         long difficultyBits, int maxTxPerBlock, long maxTries) {
+                         long difficultyBits, int maxTxPerBlock, long maxTries,
+                         String minerAddress, long blockRewardMinor) {
         this.chain = chain;
         this.state = state;
         this.mempool = mempool;
@@ -35,6 +40,8 @@ public final class BlockProducer {
         this.difficultyBits = difficultyBits;
         this.maxTxPerBlock = maxTxPerBlock;
         this.maxTries = maxTries;
+        this.minerAddress = (minerAddress == null || minerAddress.isBlank()) ? null : minerAddress;
+        this.blockRewardMinor = Math.max(0L, blockRewardMinor);
     }
 
     /** One production attempt: returns the new head hash if a block was produced. */
@@ -53,6 +60,9 @@ public final class BlockProducer {
             // nothing to do (unless you want to mine empty blocks)
             return Optional.empty();
         }
+
+        long totalFeesMinor = sumFees(txs);
+        long rewardMinor = computeReward(totalFeesMinor);
 
         // 3) Compute merkle root over tx IDs
         byte[] merkle = Merkle.rootOf(idsOf(txs));
@@ -83,6 +93,7 @@ public final class BlockProducer {
         }
 
         boolean stateApplied = false;
+        boolean rewardCredited = false;
         try {
             // 6) Validate block before persisting
             ConsensusRules.validateBlock(finalBlock, chain);
@@ -90,6 +101,10 @@ public final class BlockProducer {
             // 7) Apply state and persist
             state.applyBlock(finalBlock);
             stateApplied = true;
+            if (rewardMinor > 0 && minerAddress != null) {
+                state.credit(minerAddress, rewardMinor);
+                rewardCredited = true;
+            }
             chain.putBlock(finalBlock);
             byte[] newHead = chain.getHead().orElse(null);
 
@@ -104,6 +119,12 @@ public final class BlockProducer {
                 } catch (Exception ignored) {
                 }
             }
+            if (rewardCredited) {
+                try {
+                    state.credit(minerAddress, -rewardMinor);
+                } catch (Exception ignored) {
+                }
+            }
             requeueTransactions(txs);
             throw e;
         }
@@ -114,6 +135,32 @@ public final class BlockProducer {
         java.util.List<byte[]> out = new java.util.ArrayList<>(txs.size());
         for (Transaction tx : txs) out.add(tx.id());
         return out;
+    }
+
+    private long sumFees(List<Transaction> txs) {
+        long total = 0L;
+        if (txs == null) {
+            return 0L;
+        }
+        for (Transaction tx : txs) {
+            try {
+                total = addExact(total, Math.max(0L, tx.feeMinor()));
+            } catch (ArithmeticException e) {
+                throw new IllegalArgumentException("Fee total overflow", e);
+            }
+        }
+        return total;
+    }
+
+    private long computeReward(long totalFeesMinor) {
+        if (minerAddress == null) {
+            return 0L;
+        }
+        try {
+            return addExact(blockRewardMinor, totalFeesMinor);
+        } catch (ArithmeticException e) {
+            throw new IllegalArgumentException("Reward overflow", e);
+        }
     }
 
     private void requeueTransactions(List<Transaction> txs) {

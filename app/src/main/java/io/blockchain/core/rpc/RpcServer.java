@@ -335,19 +335,44 @@ public final class RpcServer {
                     status = sendError(exchange, 400, "invalid_json", "Failed to parse transaction request");
                     return;
                 }
-                if (req == null || req.from == null || req.to == null) {
+                if (req == null) {
+                    status = sendError(exchange, 400, "invalid_request", "Request body is required");
+                    return;
+                }
+                if (req.from == null || req.from.isBlank() || req.to == null || req.to.isBlank()) {
                     status = sendError(exchange, 400, "missing_fields", "Fields 'from' and 'to' are required");
                     return;
                 }
+                if (req.amountMinor <= 0) {
+                    status = sendError(exchange, 400, "invalid_amount", "Field 'amountMinor' must be > 0");
+                    return;
+                }
+                if (req.feeMinor < 0) {
+                    status = sendError(exchange, 400, "invalid_fee", "Field 'feeMinor' must be >= 0");
+                    return;
+                }
+                if (req.nonce < 0) {
+                    status = sendError(exchange, 400, "invalid_nonce", "Field 'nonce' must be >= 0");
+                    return;
+                }
+                byte[] payload = null;
+                if (req.payloadHex != null && !req.payloadHex.isBlank()) {
+                    try {
+                        payload = parseHex(req.payloadHex);
+                    } catch (IllegalArgumentException e) {
+                        status = sendError(exchange, 400, "invalid_payload", e.getMessage());
+                        return;
+                    }
+                }
                 try {
                     Transaction.Builder builder = Transaction.builder()
-                            .from(req.from)
-                            .to(req.to)
+                            .from(req.from.trim())
+                            .to(req.to.trim())
                             .amountMinor(req.amountMinor)
                             .feeMinor(req.feeMinor)
                             .nonce(req.nonce);
-                    if (req.payloadHex != null) {
-                        builder.payload(parseHex(req.payloadHex));
+                    if (payload != null) {
+                        builder.payload(payload);
                     }
                     Transaction tx = builder.build();
                     node.mempool().add(tx);

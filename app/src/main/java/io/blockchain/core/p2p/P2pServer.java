@@ -32,6 +32,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -66,6 +67,7 @@ public final class P2pServer {
     private final NioEventLoopGroup clientGroup = new NioEventLoopGroup();
     private final ChannelGroup channels = new DefaultChannelGroup(GlobalEventExecutor.INSTANCE);
     private final Map<String, PeerContext> peersById = new ConcurrentHashMap<>();
+    private final CopyOnWriteArrayList<P2pMessage> periodicMessages = new CopyOnWriteArrayList<>();
 
     private ScheduledExecutorService housekeeping;
     private Channel serverChannel;
@@ -85,6 +87,13 @@ public final class P2pServer {
         this.pingIntervalMillis = Math.max(100L, pingIntervalMillis);
         this.idleTimeoutMillis = Math.max(this.pingIntervalMillis, idleTimeoutMillis);
         this.autoRespondPings = autoRespondPings;
+    }
+
+    public void registerPeriodicMessage(P2pMessage message) {
+        if (message == null) {
+            return;
+        }
+        periodicMessages.addIfAbsent(message);
     }
 
     public void start() {
@@ -230,6 +239,15 @@ public final class P2pServer {
                 if (now - context.lastPingSent >= pingIntervalMillis) {
                     context.lastPingSent = now;
                     channel.writeAndFlush(P2pMessage.ping());
+                }
+            }
+            for (P2pMessage message : periodicMessages) {
+                for (PeerContext context : peersById.values()) {
+                    Channel channel = context.channel;
+                    if (channel == null || !channel.isActive() || context.nodeId == null) {
+                        continue;
+                    }
+                    channel.writeAndFlush(message);
                 }
             }
         } catch (Exception e) {

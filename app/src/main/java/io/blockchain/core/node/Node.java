@@ -36,7 +36,9 @@ public final class Node {
                 chain, state, mempool, pow,
                 config.difficultyBits,
                 config.maxTxPerBlock,
-                config.maxPowTries
+                config.maxPowTries,
+                config.minerAddress,
+                config.blockRewardMinor
         );
     }
 

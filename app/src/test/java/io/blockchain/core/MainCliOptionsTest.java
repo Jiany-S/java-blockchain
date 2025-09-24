@@ -20,6 +20,8 @@ class MainCliOptionsTest {
         assertEquals(Path.of("./data/chain").normalize(), options.dataDir().normalize());
         assertTrue(options.p2pPeers().isEmpty());
         assertNull(options.nodeId());
+        assertEquals(50L, options.blockRewardMinor());
+        assertNull(options.minerAddress());
     }
 
     @Test
@@ -37,7 +39,9 @@ class MainCliOptionsTest {
                 "--keep-alive",
                 "--p2p-peer=peer1:9000",
                 "--p2p-peer=peer2:9001",
-                "--node-id=my-node"
+                "--node-id=my-node",
+                "--miner-address=miner-address",
+                "--block-reward-minor=75"
         });
         assertFalse(options.showHelp());
         assertTrue(options.enableApi());
@@ -54,6 +58,8 @@ class MainCliOptionsTest {
         assertEquals(2, options.p2pPeers().size());
         assertTrue(options.p2pPeers().contains("peer1:9000"));
         assertTrue(options.p2pPeers().contains("peer2:9001"));
+        assertEquals("miner-address", options.minerAddress());
+        assertEquals(75L, options.blockRewardMinor());
     }
 
     @Test

@@ -287,10 +287,34 @@ public class ApiServer {
                     status = sendError(exchange, 400, "invalid_json", "Failed to parse transaction request");
                     return;
                 }
+                if (req == null) {
+                    status = sendError(exchange, 400, "invalid_request", "Request body is required");
+                    return;
+                }
+                if (req.from == null || req.from.isBlank() || req.to == null || req.to.isBlank()) {
+                    status = sendError(exchange, 400, "missing_fields", "Fields 'from' and 'to' are required");
+                    return;
+                }
+                if (req.amount <= 0) {
+                    status = sendError(exchange, 400, "invalid_amount", "Field 'amount' must be > 0");
+                    return;
+                }
+                if (req.fee < 0) {
+                    status = sendError(exchange, 400, "invalid_fee", "Field 'fee' must be >= 0");
+                    return;
+                }
+                if (req.nonce < 0) {
+                    status = sendError(exchange, 400, "invalid_nonce", "Field 'nonce' must be >= 0");
+                    return;
+                }
+                if (req.signatureBytes == null || req.signatureBytes.length == 0) {
+                    status = sendError(exchange, 400, "missing_signature", "Field 'signatureBytes' is required");
+                    return;
+                }
                 try {
                     Transaction tx = Transaction.builder()
-                            .from(req.from)
-                            .to(req.to)
+                            .from(req.from.trim())
+                            .to(req.to.trim())
                             .amountMinor(req.amount)
                             .feeMinor(req.fee)
                             .nonce(req.nonce)

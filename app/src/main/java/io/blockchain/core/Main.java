@@ -63,8 +63,19 @@ public class Main {
             allocations = regenerateAllocationsTemplate(walletStore, allocFile);
         }
 
-        NodeConfig config = NodeConfig.defaultLocal();
+        NodeConfig baseConfig = NodeConfig.defaultLocal();
+        long rewardMinor = options.blockRewardMinor();
+        if (rewardMinor < 0) {
+            rewardMinor = baseConfig.blockRewardMinor;
+        }
+        String minerAddress = options.minerAddress();
+        if (minerAddress == null || minerAddress.isBlank()) {
+            minerAddress = alice.getAddress();
+        }
+        NodeConfig config = baseConfig.withMiner(minerAddress, rewardMinor);
         Node node = Node.rocks(config, dataPath.toString());
+
+        LOG.info("Mining rewards -> " + minerAddress + " (base reward " + rewardMinor + " minor units)");
 
         boolean chainIsEmpty = node.chain().getHead().isEmpty();
         if (allocations == null && chainIsEmpty) {
@@ -319,7 +330,9 @@ public class Main {
             boolean enableP2p,
             int p2pPort,
             String nodeId,
-            List<String> p2pPeers
+            List<String> p2pPeers,
+            String minerAddress,
+            long blockRewardMinor
     ) {
         static CliOptions parse(String[] args) {
             Path dataDir = envPath("JAVA_CHAIN_DATA_DIR", Path.of("./data/chain"));
@@ -350,6 +363,19 @@ public class Main {
             }
             boolean showHelp = false;
             String error = null;
+
+            NodeConfig defaults = NodeConfig.defaultLocal();
+            long blockRewardMinor = defaults.blockRewardMinor;
+            String minerAddress = envOrDefault("JAVA_CHAIN_MINER_ADDRESS", null);
+            String rewardEnv = System.getenv("JAVA_CHAIN_BLOCK_REWARD_MINOR");
+            if (rewardEnv != null && !rewardEnv.isBlank()) {
+                try {
+                    blockRewardMinor = parsePositiveLong(rewardEnv, "JAVA_CHAIN_BLOCK_REWARD_MINOR");
+                } catch (IllegalArgumentException ex) {
+                    showHelp = true;
+                    error = ex.getMessage();
+                }
+            }
 
             if (args != null) {
                 for (String arg : args) {
@@ -416,6 +442,15 @@ public class Main {
                         p2pPeers.add(arg.substring("--p2p-peer=".length()));
                     } else if (arg.startsWith("--node-id=") || arg.startsWith("--p2p-node-id=")) {
                         nodeId = arg.substring(arg.indexOf('=') + 1);
+                    } else if (arg.startsWith("--miner-address=")) {
+                        minerAddress = arg.substring("--miner-address=".length()).trim();
+                    } else if (arg.startsWith("--block-reward-minor=")) {
+                        try {
+                            blockRewardMinor = parsePositiveLong(arg.substring("--block-reward-minor=".length()), "--block-reward-minor");
+                        } catch (IllegalArgumentException ex) {
+                            showHelp = true;
+                            error = ex.getMessage();
+                        }
                     } else if (!arg.startsWith("--")) {
                         dataDir = Path.of(arg);
                     } else if (error == null) {
@@ -438,6 +473,9 @@ public class Main {
                 nodeId = null;
             }
             List<String> peers = List.copyOf(p2pPeers);
+            if (minerAddress != null && minerAddress.isBlank()) {
+                minerAddress = null;
+            }
 
             return new CliOptions(
                     showHelp,
@@ -459,7 +497,9 @@ public class Main {
                     enableP2p,
                     p2pPort,
                     nodeId,
-                    peers
+                    peers,
+                    minerAddress,
+                    blockRewardMinor
             );
         }
 
@@ -490,6 +530,8 @@ Options:
   --p2p-port=<port>          Port for the P2P listener (default 9000)
   --p2p-peer=<host:port>     Add a bootstrap peer (repeatable)
   --node-id=<id>             Explicit node identifier advertised to peers
+  --miner-address=<addr>     Address that receives block rewards and fees
+  --block-reward-minor=<n>   Base block reward in minor units (default 50)
 
 Environment overrides:
   JAVA_CHAIN_DATA_DIR        Override --data-dir
@@ -500,6 +542,8 @@ Environment overrides:
   JAVA_CHAIN_ENABLE_P2P      Set to "false" to disable P2P without CLI flag
   JAVA_CHAIN_P2P_PEERS       Comma-separated bootstrap peers (host:port)
   JAVA_CHAIN_NODE_ID         Override/generated node identifier
+  JAVA_CHAIN_MINER_ADDRESS   Address credited with mining rewards
+  JAVA_CHAIN_BLOCK_REWARD_MINOR Base block reward in minor units
   JAVA_CHAIN_KEEP_ALIVE      Set to "true" to force keep-alive mode
 """);
         }

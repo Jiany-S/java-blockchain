@@ -36,13 +36,14 @@ class BlockProducerStateTest {
         assertTrue(mempool.add(tx));
 
         InMemoryChainStore chain = new InMemoryChainStore();
-        BlockProducer producer = new BlockProducer(chain, state, mempool, new ProofOfWork(), 0, 16, 1000);
+        BlockProducer producer = new BlockProducer(chain, state, mempool, new ProofOfWork(), 0, 16, 1000, "miner", 50);
 
         Optional<byte[]> head = producer.tick();
         assertTrue(head.isPresent());
         assertEquals(73, state.getBalance("alice"));
         assertEquals(25, state.getBalance("bob"));
         assertEquals(1, state.getNonce("alice"));
+        assertEquals(50 + 2, state.getBalance("miner"));
         assertEquals(0, mempool.size());
     }
 
@@ -65,13 +66,14 @@ class BlockProducerStateTest {
         assertTrue(mempool.add(tx));
 
         ChainStore chain = new FailingChainStore();
-        BlockProducer producer = new BlockProducer(chain, state, mempool, new ProofOfWork(), 0, 16, 1000);
+        BlockProducer producer = new BlockProducer(chain, state, mempool, new ProofOfWork(), 0, 16, 1000, "miner", 50);
 
         RuntimeException ex = assertThrows(RuntimeException.class, producer::tick);
         assertEquals("persist-failure", ex.getMessage());
         assertEquals(100, state.getBalance("alice"));
         assertEquals(0, state.getNonce("alice"));
         assertEquals(0, state.getBalance("bob"));
+        assertEquals(0, state.getBalance("miner"));
         assertEquals(1, mempool.size());
     }
 

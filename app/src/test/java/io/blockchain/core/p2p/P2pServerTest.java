@@ -4,6 +4,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -23,6 +24,28 @@ class P2pServerTest {
             }
         }
         servers.clear();
+    }
+
+    @Test
+    void periodicMessagesAreBroadcast() throws Exception {
+        int portA = freePort();
+        int portB = freePort();
+
+        CountDownLatch handshake = new CountDownLatch(2);
+        CountDownLatch messageLatch = new CountDownLatch(1);
+        RecordingListener listenerA = new RecordingListener(new CopyOnWriteArrayList<>(), handshake);
+        PeriodicRecorder listenerB = new PeriodicRecorder(handshake, messageLatch);
+
+        P2pServer serverA = createServer("node-A", portA, listenerA, 200L, 1_000L, true);
+        P2pServer serverB = createServer("node-B", portB, listenerB, 200L, 1_000L, true);
+        serverA.registerPeriodicMessage(new P2pMessage("announce", Map.of("height", 42)));
+
+        serverA.start();
+        serverB.start();
+        serverB.connect("127.0.0.1", portA);
+
+        assertTrue(handshake.await(5, TimeUnit.SECONDS));
+        assertTrue(messageLatch.await(5, TimeUnit.SECONDS));
     }
 
     @Test
@@ -114,6 +137,32 @@ class P2pServerTest {
         try (java.net.ServerSocket socket = new java.net.ServerSocket(0)) {
             socket.setReuseAddress(true);
             return socket.getLocalPort();
+        }
+    }
+
+    private static final class PeriodicRecorder implements P2pServer.PeerListener {
+        private final CountDownLatch handshakeLatch;
+        private final CountDownLatch messageLatch;
+
+        PeriodicRecorder(CountDownLatch handshakeLatch, CountDownLatch messageLatch) {
+            this.handshakeLatch = handshakeLatch;
+            this.messageLatch = messageLatch;
+        }
+
+        @Override
+        public void onPeerConnected(P2pServer.Peer peer) {
+            handshakeLatch.countDown();
+        }
+
+        @Override
+        public void onPeerDisconnected(P2pServer.Peer peer) {
+        }
+
+        @Override
+        public void onMessage(P2pServer.Peer peer, P2pMessage message) {
+            if ("announce".equals(message.type())) {
+                messageLatch.countDown();
+            }
         }
     }
 

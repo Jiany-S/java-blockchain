@@ -4,15 +4,14 @@ A minimal blockchain node written in Java. It implements a simple account-based 
 
 ## Features
 
-- **Protocol & Consensus** � transactions with nonce/fee/signature fields, block headers with Merkle roots, configurable PoW difficulty
-- **State Management** � account balances and nonces, deterministic replay from the persisted chain, demo flow for quick experiments
-- **Storage** � RocksDB chain store (with an in-memory implementation for tests)
-- **Wallets** � persistent EC key generation, optional passphrase encryption, automatic address derivation
-- **APIs** �
-  - REST API (OpenAPI served at `/openapi.json`)
-  - JSON-style RPC endpoints
-  - Prometheus metrics at `/metrics`
-- **Tooling** � Gradle build, cross-platform dev scripts, Docker image & docker-compose example
+- **Protocol & Consensus** - transactions with nonce/fee/signature fields, block headers with Merkle roots, configurable PoW difficulty
+- **Mining** - background scheduler attempts a block every second; configurable miner address and block reward; fees accrue to the miner
+- **P2P** - Netty-based gossip with automatic ping/pong heartbeats and idle peer eviction
+- **State Management** - account balances and nonces, deterministic replay from the persisted chain, demo flow for quick experiments
+- **Storage** - RocksDB chain store (with an in-memory implementation for tests)
+- **Wallets** - persistent EC key generation, optional passphrase encryption, automatic address derivation
+- **APIs** - REST API, RPC endpoints, and Prometheus metrics
+- **Tooling** - Gradle build, cross-platform dev scripts, Docker image & docker-compose example
 
 ## Requirements
 
@@ -54,11 +53,36 @@ To inspect the available CLI options:
 | `--rpc-token=<token>` | Require Bearer or `X-API-Key` token for the RPC server |
 | `--no-p2p` | Disable the Netty listener (enabled by default) |
 | `--p2p-port=<port>` | P2P port (default 9000) |
+| `--miner-address=<addr>` | Address credited with block rewards and transaction fees |
+| `--block-reward-minor=<n>` | Base block reward in minor units (default 50) |
 
 Environment overrides:
 - `JAVA_CHAIN_DATA_DIR`, `JAVA_CHAIN_API_TOKEN`, `JAVA_CHAIN_RPC_TOKEN`, `JAVA_CHAIN_NODE_ID`
 - `JAVA_CHAIN_ENABLE_API`, `JAVA_CHAIN_ENABLE_RPC`, `JAVA_CHAIN_ENABLE_P2P`, `JAVA_CHAIN_P2P_PEERS`
-- `JAVA_CHAIN_KEEP_ALIVE`
+- `JAVA_CHAIN_MINER_ADDRESS`, `JAVA_CHAIN_BLOCK_REWARD_MINOR`, `JAVA_CHAIN_KEEP_ALIVE`
+
+## Mining & Rewards
+
+The keep-alive mode starts a background scheduler that calls `node.tick()` once per second. Each successful block credits the configured miner address with the base block reward plus the transaction fees included in the block.
+
+- Configure the miner address via `--miner-address=<addr>` (or `JAVA_CHAIN_MINER_ADDRESS`). If omitted, the first demo wallet (`alice`) is used.
+- Configure the base reward via `--block-reward-minor=<n>` (or `JAVA_CHAIN_BLOCK_REWARD_MINOR`). The default is `50` minor units.
+- Rewards are paid into the state store immediately after the block is persisted; if persistence fails, both the state changes and reward are rolled back.
+
+## Fork Handling
+
+Blocks are now accepted even when they do not extend the current head. The chain store persists parent/child relationships so alternative branches can be inspected. The fork choice is still "highest height wins"; more advanced fork logic can build on the new metadata.
+
+- `ChainStore#getChildren(parentHash)` returns the child hashes for a block.
+- The RocksDB-backed store maintains a dedicated column family for this lookup.
+
+## P2P Heartbeats
+
+The Netty peer-to-peer server periodically sends ping messages (default every 10s) and drops peers that remain idle for longer than the configured timeout (default 30s). This keeps gossip meshes healthy even when remote nodes vanish silently.
+
+## API & RPC Validation
+
+The REST and RPC submit/send endpoints now perform strict request validation. Malformed bodies return descriptive `400` errors instead of silently queuing invalid transactions, and authenticated tests exercise both the success and failure paths. Provide a valid Bearer or `X-API-Key` token to access protected endpoints.
 
 ## Security
 
