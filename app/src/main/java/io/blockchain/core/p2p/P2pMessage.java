@@ -13,4 +13,12 @@ public record P2pMessage(String type, Map<String, Object> payload) {
     public static P2pMessage handshake(String nodeId) {
         return new P2pMessage("handshake", Map.of("nodeId", nodeId));
     }
+    public static P2pMessage ping() {
+        return new P2pMessage("ping", Collections.emptyMap());
+    }
+
+    public static P2pMessage pong() {
+        return new P2pMessage("pong", Collections.emptyMap());
+    }
+
 }

@@ -4,8 +4,11 @@ import io.blockchain.core.protocol.Block;
 import io.blockchain.core.protocol.BlockHeader;
 import io.blockchain.core.protocol.Hashes;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -24,6 +27,9 @@ public final class InMemoryChainStore implements ChainStore {
     /** Map: blockHash -> height (from header) */
     private final Map<BytesKey, Long> heights = new HashMap<>();
 
+    /** Map: parentHash -> list of child hashes */
+    private final Map<BytesKey, List<byte[]>> children = new HashMap<>();
+
     /** Current head (best tip) */
     private byte[] head; // null until set
 
@@ -34,8 +40,27 @@ public final class InMemoryChainStore implements ChainStore {
         BytesKey key = new BytesKey(h);
 
         // store block and height (idempotent)
+        boolean existing = blocks.containsKey(key);
         blocks.put(key, block);
         heights.put(key, block.header().height());
+
+        if (!existing) {
+            byte[] parent = block.header().parentHash();
+            if (parent != null) {
+                BytesKey parentKey = new BytesKey(parent);
+                List<byte[]> list = children.computeIfAbsent(parentKey, k -> new ArrayList<>());
+                boolean duplicate = false;
+                for (byte[] childHash : list) {
+                    if (java.util.Arrays.equals(childHash, h)) {
+                        duplicate = true;
+                        break;
+                    }
+                }
+                if (!duplicate) {
+                    list.add(h.clone());
+                }
+            }
+        }
 
         // naive head rule for now: highest height wins, ties keep existing
         if (head == null) {
@@ -92,6 +117,22 @@ public final class InMemoryChainStore implements ChainStore {
     private static byte[] blockHash(Block block) {
         BlockHeader bh = block.header();
         return Hashes.sha256(bh.serialize());
+    }
+
+    @Override
+    public synchronized List<byte[]> getChildren(byte[] parentHash) {
+        if (parentHash == null) {
+            return Collections.emptyList();
+        }
+        List<byte[]> list = children.get(new BytesKey(parentHash));
+        if (list == null || list.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<byte[]> copy = new ArrayList<>(list.size());
+        for (byte[] child : list) {
+            copy.add(child.clone());
+        }
+        return copy;
     }
 
     /** Value-based key wrapper around byte[] so we can use it in maps/sets. */

@@ -55,4 +55,17 @@ public interface ChainStore {
         return blocks;
     }
 
+    default List<byte[]> getChildren(byte[] parentHash) {
+        if (parentHash == null) {
+            return Collections.emptyList();
+        }
+        List<byte[]> children = new ArrayList<>();
+        for (Block block : getBlocksInOrder()) {
+            if (Arrays.equals(block.header().parentHash(), parentHash)) {
+                children.add(block.header().hash());
+            }
+        }
+        return children;
+    }
+
 }

@@ -32,6 +32,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -48,9 +51,15 @@ public final class P2pServer {
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final AttributeKey<PeerContext> CTX_KEY = AttributeKey.valueOf("peer-context");
 
+    private static final long DEFAULT_PING_INTERVAL_MS = 10_000L;
+    private static final long DEFAULT_IDLE_TIMEOUT_MS = 30_000L;
+
     private final String nodeId;
     private final int port;
     private final PeerListener listener;
+    private final long pingIntervalMillis;
+    private final long idleTimeoutMillis;
+    private final boolean autoRespondPings;
 
     private final NioEventLoopGroup bossGroup = new NioEventLoopGroup(1);
     private final NioEventLoopGroup workerGroup = new NioEventLoopGroup();
@@ -58,6 +67,7 @@ public final class P2pServer {
     private final ChannelGroup channels = new DefaultChannelGroup(GlobalEventExecutor.INSTANCE);
     private final Map<String, PeerContext> peersById = new ConcurrentHashMap<>();
 
+    private ScheduledExecutorService housekeeping;
     private Channel serverChannel;
 
     public P2pServer(String nodeId, int port) {
@@ -65,9 +75,16 @@ public final class P2pServer {
     }
 
     public P2pServer(String nodeId, int port, PeerListener listener) {
+        this(nodeId, port, listener, DEFAULT_PING_INTERVAL_MS, DEFAULT_IDLE_TIMEOUT_MS, true);
+    }
+
+    public P2pServer(String nodeId, int port, PeerListener listener, long pingIntervalMillis, long idleTimeoutMillis, boolean autoRespondPings) {
         this.nodeId = Objects.requireNonNull(nodeId, "nodeId");
         this.port = port;
         this.listener = listener == null ? new LoggingPeerListener() : listener;
+        this.pingIntervalMillis = Math.max(100L, pingIntervalMillis);
+        this.idleTimeoutMillis = Math.max(this.pingIntervalMillis, idleTimeoutMillis);
+        this.autoRespondPings = autoRespondPings;
     }
 
     public void start() {
@@ -85,6 +102,7 @@ public final class P2pServer {
             serverChannel = bootstrap.bind(port).sync().channel();
             channels.add(serverChannel);
             LOG.info(() -> "P2P server listening on port " + port + " (nodeId=" + nodeId + ")");
+            startHousekeeping();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("Interrupted while starting P2P server", e);
@@ -160,6 +178,7 @@ public final class P2pServer {
     }
 
     public void stop() {
+        stopHousekeeping();
         try {
             if (serverChannel != null) {
                 serverChannel.close().sync();
@@ -173,6 +192,49 @@ public final class P2pServer {
         clientGroup.shutdownGracefully();
         peersById.clear();
         LOG.info("P2P server stopped");
+    }
+
+    private void startHousekeeping() {
+        stopHousekeeping();
+        housekeeping = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "p2p-heartbeat-" + nodeId);
+            t.setDaemon(true);
+            return t;
+        });
+        housekeeping.scheduleAtFixedRate(this::runHousekeeping, pingIntervalMillis, pingIntervalMillis, TimeUnit.MILLISECONDS);
+    }
+
+    private void stopHousekeeping() {
+        if (housekeeping != null) {
+            housekeeping.shutdownNow();
+            housekeeping = null;
+        }
+    }
+
+    private void runHousekeeping() {
+        try {
+            long now = System.currentTimeMillis();
+            for (PeerContext context : peersById.values()) {
+                Channel channel = context.channel;
+                if (channel == null || !channel.isActive()) {
+                    continue;
+                }
+                if (context.nodeId == null) {
+                    continue;
+                }
+                if (context.lastSeen > 0 && now - context.lastSeen > idleTimeoutMillis) {
+                    LOG.fine(() -> "Closing stale peer " + context.nodeId);
+                    channel.close();
+                    continue;
+                }
+                if (now - context.lastPingSent >= pingIntervalMillis) {
+                    context.lastPingSent = now;
+                    channel.writeAndFlush(P2pMessage.ping());
+                }
+            }
+        } catch (Exception e) {
+            LOG.log(Level.FINE, "P2P housekeeping failed", e);
+        }
     }
 
     private void configurePipeline(ChannelPipeline pipeline) {
@@ -213,10 +275,18 @@ public final class P2pServer {
                 Object nodeIdObj = msg.payload().get("nodeId");
                 if (nodeIdObj instanceof String id) {
                     context.nodeId = id;
+                    context.lastSeen = System.currentTimeMillis();
+                    context.lastPingSent = 0L;
                     peersById.put(id, context);
                     listener.onPeerConnected(new Peer(id, remoteAddress(ctx.channel())));
                 }
             } else if (context.nodeId != null) {
+                context.lastSeen = System.currentTimeMillis();
+                if ("ping".equals(msg.type())) {
+                    if (autoRespondPings) {
+                        ctx.writeAndFlush(P2pMessage.pong());
+                    }
+                }
                 listener.onMessage(new Peer(context.nodeId, remoteAddress(ctx.channel())), msg);
             }
         }
@@ -249,9 +319,13 @@ public final class P2pServer {
     private final class PeerContext {
         final Channel channel;
         volatile String nodeId;
+        volatile long lastSeen;
+        volatile long lastPingSent;
 
         PeerContext(Channel channel) {
             this.channel = channel;
+            this.lastSeen = System.currentTimeMillis();
+            this.lastPingSent = 0L;
         }
     }
 

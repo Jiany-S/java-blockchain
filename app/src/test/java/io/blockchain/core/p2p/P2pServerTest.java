@@ -51,8 +51,61 @@ class P2pServerTest {
         assertEquals("node-B", peerFromA.nodeId());
     }
 
+    @Test
+    void heartbeatSendsPingMessages() throws Exception {
+        int portA = freePort();
+        int portB = freePort();
+
+        CountDownLatch handshake = new CountDownLatch(2);
+        CountDownLatch pingLatch = new CountDownLatch(1);
+        CopyOnWriteArrayList<String> seenByA = new CopyOnWriteArrayList<>();
+
+        RecordingListener listenerA = new RecordingListener(seenByA, handshake);
+        HeartbeatRecorder listenerB = new HeartbeatRecorder(handshake, pingLatch);
+
+        P2pServer serverA = createServer("node-A", portA, listenerA, 200L, 1_000L, true);
+        P2pServer serverB = createServer("node-B", portB, listenerB, 200L, 1_000L, true);
+
+        serverA.start();
+        serverB.start();
+
+        serverB.connect("127.0.0.1", portA);
+
+        assertTrue(handshake.await(5, TimeUnit.SECONDS));
+        assertTrue(pingLatch.await(5, TimeUnit.SECONDS));
+        assertTrue(listenerB.messages.stream().anyMatch(msg -> "ping".equals(msg.type())));
+    }
+
+    @Test
+    void stalePeerIsDisconnectedWhenNoHeartbeat() throws Exception {
+        int portA = freePort();
+        int portB = freePort();
+
+        CountDownLatch handshake = new CountDownLatch(2);
+        CountDownLatch disconnectLatch = new CountDownLatch(1);
+
+        DisconnectRecorder listenerA = new DisconnectRecorder(handshake, disconnectLatch);
+        PassiveListener listenerB = new PassiveListener(handshake);
+
+        P2pServer serverA = createServer("node-A", portA, listenerA, 200L, 600L, true);
+        P2pServer serverB = createServer("node-B", portB, listenerB, 50_000L, 600L, false);
+
+        serverA.start();
+        serverB.start();
+
+        serverB.connect("127.0.0.1", portA);
+
+        assertTrue(handshake.await(5, TimeUnit.SECONDS));
+        assertTrue(disconnectLatch.await(5, TimeUnit.SECONDS));
+        assertTrue(serverA.peers().isEmpty());
+    }
+
     private P2pServer createServer(String nodeId, int port, P2pServer.PeerListener listener) {
-        P2pServer server = new P2pServer(nodeId, port, listener);
+        return createServer(nodeId, port, listener, 10_000L, 30_000L, true);
+    }
+
+    private P2pServer createServer(String nodeId, int port, P2pServer.PeerListener listener, long pingIntervalMillis, long idleTimeoutMillis, boolean autoRespondPings) {
+        P2pServer server = new P2pServer(nodeId, port, listener, pingIntervalMillis, idleTimeoutMillis, autoRespondPings);
         servers.add(server);
         return server;
     }
@@ -87,4 +140,78 @@ class P2pServerTest {
         public void onMessage(P2pServer.Peer peer, P2pMessage message) {
         }
     }
+
+    private static final class HeartbeatRecorder implements P2pServer.PeerListener {
+        private final CountDownLatch handshakeLatch;
+        private final CountDownLatch pingLatch;
+        private final CopyOnWriteArrayList<P2pMessage> messages = new CopyOnWriteArrayList<>();
+
+        HeartbeatRecorder(CountDownLatch handshakeLatch, CountDownLatch pingLatch) {
+            this.handshakeLatch = handshakeLatch;
+            this.pingLatch = pingLatch;
+        }
+
+        @Override
+        public void onPeerConnected(P2pServer.Peer peer) {
+            handshakeLatch.countDown();
+        }
+
+        @Override
+        public void onPeerDisconnected(P2pServer.Peer peer) {
+        }
+
+        @Override
+        public void onMessage(P2pServer.Peer peer, P2pMessage message) {
+            messages.add(message);
+            if ("ping".equals(message.type())) {
+                pingLatch.countDown();
+            }
+        }
+    }
+
+    private static final class DisconnectRecorder implements P2pServer.PeerListener {
+        private final CountDownLatch handshakeLatch;
+        private final CountDownLatch disconnectLatch;
+
+        DisconnectRecorder(CountDownLatch handshakeLatch, CountDownLatch disconnectLatch) {
+            this.handshakeLatch = handshakeLatch;
+            this.disconnectLatch = disconnectLatch;
+        }
+
+        @Override
+        public void onPeerConnected(P2pServer.Peer peer) {
+            handshakeLatch.countDown();
+        }
+
+        @Override
+        public void onPeerDisconnected(P2pServer.Peer peer) {
+            disconnectLatch.countDown();
+        }
+
+        @Override
+        public void onMessage(P2pServer.Peer peer, P2pMessage message) {
+        }
+    }
+
+    private static final class PassiveListener implements P2pServer.PeerListener {
+        private final CountDownLatch handshakeLatch;
+
+        PassiveListener(CountDownLatch handshakeLatch) {
+            this.handshakeLatch = handshakeLatch;
+        }
+
+        @Override
+        public void onPeerConnected(P2pServer.Peer peer) {
+            handshakeLatch.countDown();
+        }
+
+        @Override
+        public void onPeerDisconnected(P2pServer.Peer peer) {
+        }
+
+        @Override
+        public void onMessage(P2pServer.Peer peer, P2pMessage message) {
+        }
+    }
+
 }

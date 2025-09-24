@@ -6,7 +6,10 @@ import io.blockchain.core.protocol.Hashes;
 import org.rocksdb.*;
 
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -16,6 +19,7 @@ import java.util.Optional;
  *  - "blocks"  : key = blockHash(32), val = block.serialize()
  *  - "heights" : key = blockHash(32), val = height(8, big-endian)
  *  - "meta"    : key = "head",        val = blockHash(32)
+ *  - "children": key = parentHash(32), val = child hashes (32 * n)
  */
 public final class RocksDBChainStore implements ChainStore, AutoCloseable {
 
@@ -27,6 +31,7 @@ public final class RocksDBChainStore implements ChainStore, AutoCloseable {
     private final ColumnFamilyHandle cfBlocks;
     private final ColumnFamilyHandle cfHeights;
     private final ColumnFamilyHandle cfMeta;
+    private final ColumnFamilyHandle cfChildren;
 
     private final Options options;
     private final DBOptions dbOptions;
@@ -35,12 +40,14 @@ public final class RocksDBChainStore implements ChainStore, AutoCloseable {
                               ColumnFamilyHandle cfBlocks,
                               ColumnFamilyHandle cfHeights,
                               ColumnFamilyHandle cfMeta,
+                              ColumnFamilyHandle cfChildren,
                               Options options,
                               DBOptions dbOptions) {
         this.db = db;
         this.cfBlocks = cfBlocks;
         this.cfHeights = cfHeights;
         this.cfMeta = cfMeta;
+        this.cfChildren = cfChildren;
         this.options = options;
         this.dbOptions = dbOptions;
     }
@@ -62,9 +69,10 @@ public final class RocksDBChainStore implements ChainStore, AutoCloseable {
             ColumnFamilyDescriptor cfBlocksDesc  = new ColumnFamilyDescriptor("blocks".getBytes());
             ColumnFamilyDescriptor cfHeightsDesc = new ColumnFamilyDescriptor("heights".getBytes());
             ColumnFamilyDescriptor cfMetaDesc    = new ColumnFamilyDescriptor("meta".getBytes());
+            ColumnFamilyDescriptor cfChildrenDesc = new ColumnFamilyDescriptor("children".getBytes());
 
             java.util.List<ColumnFamilyDescriptor> cfDescs = java.util.Arrays.asList(
-                    cfDefault, cfBlocksDesc, cfHeightsDesc, cfMetaDesc
+                    cfDefault, cfBlocksDesc, cfHeightsDesc, cfMetaDesc, cfChildrenDesc
             );
             java.util.List<ColumnFamilyHandle> cfHandles = new java.util.ArrayList<>();
 
@@ -74,8 +82,9 @@ public final class RocksDBChainStore implements ChainStore, AutoCloseable {
             ColumnFamilyHandle cfBlocks = cfHandles.get(1);
             ColumnFamilyHandle cfHeights = cfHandles.get(2);
             ColumnFamilyHandle cfMeta = cfHandles.get(3);
+            ColumnFamilyHandle cfChildren = cfHandles.get(4);
 
-            return new RocksDBChainStore(db, cfBlocks, cfHeights, cfMeta, opts, dbOpts);
+            return new RocksDBChainStore(db, cfBlocks, cfHeights, cfMeta, cfChildren, opts, dbOpts);
         } catch (RocksDBException e) {
             throw new RuntimeException("Failed to open RocksDB at " + dataDir, e);
         }
@@ -95,6 +104,13 @@ public final class RocksDBChainStore implements ChainStore, AutoCloseable {
             try (WriteBatch batch = new WriteBatch()) {
                 batch.put(cfBlocks, hash, body);
                 batch.put(cfHeights, hash, height);
+
+                byte[] parent = block.header().parentHash();
+                if (parent != null) {
+                    byte[] existingChildren = db.get(cfChildren, parent);
+                    byte[] updated = appendChild(existingChildren, hash);
+                    batch.put(cfChildren, parent, updated);
+                }
 
                 // naive head rule: highest height wins (tie keep current)
                 byte[] currentHead = db.get(cfMeta, "head".getBytes());
@@ -182,12 +198,59 @@ public final class RocksDBChainStore implements ChainStore, AutoCloseable {
         try { if (cfBlocks != null) cfBlocks.close(); } catch (Exception ignored) {}
         try { if (cfHeights != null) cfHeights.close(); } catch (Exception ignored) {}
         try { if (cfMeta != null) cfMeta.close(); } catch (Exception ignored) {}
+        try { if (cfChildren != null) cfChildren.close(); } catch (Exception ignored) {}
         try { if (db != null) db.close(); } catch (Exception ignored) {}
         try { if (options != null) options.close(); } catch (Exception ignored) {}
         try { if (dbOptions != null) dbOptions.close(); } catch (Exception ignored) {}
     }
 
+    @Override
+    public synchronized List<byte[]> getChildren(byte[] parentHash) {
+        if (parentHash == null) {
+            return Collections.emptyList();
+        }
+        try {
+            byte[] data = db.get(cfChildren, parentHash);
+            if (data == null || data.length == 0) {
+                return Collections.emptyList();
+            }
+            int count = data.length / 32;
+            List<byte[]> out = new ArrayList<>(count);
+            for (int i = 0; i < count; i++) {
+                int start = i * 32;
+                int end = start + 32;
+                out.add(Arrays.copyOfRange(data, start, end));
+            }
+            return out;
+        } catch (RocksDBException e) {
+            throw new RuntimeException("getChildren failed", e);
+        }
+    }
+
     // -------------- helpers ----------------
+
+    private static byte[] appendChild(byte[] existing, byte[] child) {
+        if (existing != null) {
+            for (int i = 0; i < existing.length; i += 32) {
+                boolean match = true;
+                for (int j = 0; j < 32; j++) {
+                    if (existing[i + j] != child[j]) {
+                        match = false;
+                        break;
+                    }
+                }
+                if (match) {
+                    return existing;
+                }
+            }
+        }
+        byte[] updated = new byte[(existing == null ? 0 : existing.length) + child.length];
+        if (existing != null) {
+            System.arraycopy(existing, 0, updated, 0, existing.length);
+        }
+        System.arraycopy(child, 0, updated, existing == null ? 0 : existing.length, child.length);
+        return updated;
+    }
 
     private static byte[] blockHash(Block block) {
         BlockHeader bh = block.header();
