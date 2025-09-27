@@ -8,6 +8,7 @@ import io.blockchain.core.metrics.BlockMetrics;
 import io.blockchain.core.node.Node;
 import io.blockchain.core.node.NodeConfig;
 import io.blockchain.core.p2p.P2pServer;
+import io.blockchain.core.p2p.P2pMessage;
 import io.blockchain.core.protocol.Transaction;
 import io.blockchain.core.rpc.RpcServer;
 import io.blockchain.core.wallet.Wallet;
@@ -115,6 +116,12 @@ public class Main {
                 p2pServer = new P2pServer(nodeId, options.p2pPort());
                 p2pServer.start();
                 p2pServer.connect(options.p2pPeers());
+                P2pServer serverRef = p2pServer;
+                // Periodically announce our observed head height to peers
+                serverRef.registerPeriodicSupplier(() -> {
+                    long heightNow = currentHeight(node);
+                    return new P2pMessage("announce", java.util.Map.of("height", heightNow));
+                });
             }
             if (options.enableApi()) {
                 apiServer = new ApiServer(

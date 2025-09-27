@@ -36,6 +36,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -68,6 +69,7 @@ public final class P2pServer {
     private final ChannelGroup channels = new DefaultChannelGroup(GlobalEventExecutor.INSTANCE);
     private final Map<String, PeerContext> peersById = new ConcurrentHashMap<>();
     private final CopyOnWriteArrayList<P2pMessage> periodicMessages = new CopyOnWriteArrayList<>();
+    private final CopyOnWriteArrayList<Supplier<P2pMessage>> periodicSuppliers = new CopyOnWriteArrayList<>();
 
     private ScheduledExecutorService housekeeping;
     private Channel serverChannel;
@@ -94,6 +96,17 @@ public final class P2pServer {
             return;
         }
         periodicMessages.addIfAbsent(message);
+    }
+
+    /**
+     * Register a supplier that will be invoked on each housekeeping tick to produce
+     * a message to broadcast. If the supplier returns null, nothing is sent for that supplier.
+     */
+    public void registerPeriodicSupplier(Supplier<P2pMessage> supplier) {
+        if (supplier == null) {
+            return;
+        }
+        periodicSuppliers.addIfAbsent(supplier);
     }
 
     public void start() {
@@ -248,6 +261,18 @@ public final class P2pServer {
                         continue;
                     }
                     channel.writeAndFlush(message);
+                }
+            }
+            for (Supplier<P2pMessage> supplier : periodicSuppliers) {
+                P2pMessage dynamic = null;
+                try { dynamic = supplier.get(); } catch (Exception ignored) {}
+                if (dynamic == null) continue;
+                for (PeerContext context : peersById.values()) {
+                    Channel channel = context.channel;
+                    if (channel == null || !channel.isActive() || context.nodeId == null) {
+                        continue;
+                    }
+                    channel.writeAndFlush(dynamic);
                 }
             }
         } catch (Exception e) {
