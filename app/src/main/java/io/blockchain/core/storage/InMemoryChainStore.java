@@ -36,7 +36,7 @@ public final class InMemoryChainStore implements ChainStore {
     /** Map: parentHash -> list of child hashes */
     private final Map<BytesKey, List<byte[]>> children = new HashMap<>();
 
-    /** Current head (best tip) */
+    /** Current head (best tip by cumulative work) */
     private byte[] head; // null until set
 
     @Override

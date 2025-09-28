@@ -11,11 +11,11 @@ import java.util.Optional;
 
 /**
  * Minimal chain persistence API.
- * Stores blocks by their header hash, tracks heights and the current head.
+ * Stores blocks by their header hash, tracks heights, cumulative work, and the current head.
  *
  * Notes:
  * - Block "hash" = SHA-256 of the BlockHeader serialization (see BlockHeader#hash()).
- * - Height is taken from the header for now; fork-choice will refine this later.
+ * - Height and total work come from the header and Proof-of-Work difficulty respectively.
  */
 public interface ChainStore {
 

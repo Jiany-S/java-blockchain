@@ -22,6 +22,7 @@ import java.util.Optional;
  *  - "heights" : key = blockHash(32), val = height(8, big-endian)
  *  - "meta"    : key = "head",        val = blockHash(32)
  *  - "children": key = parentHash(32), val = child hashes (32 * n)
+ *  - "work"    : key = blockHash(32), val = cumulative work (big-endian, 32 bytes)
  */
 public final class RocksDBChainStore implements ChainStore, AutoCloseable {
 
@@ -315,16 +316,23 @@ public final class RocksDBChainStore implements ChainStore, AutoCloseable {
     }
 
     private static byte[] bigIntegerToBytes(BigInteger value) {
-        if (value == null) {
-            return BigInteger.ZERO.toByteArray();
+        if (value == null || value.signum() < 0) {
+            value = BigInteger.ZERO;
         }
-        return value.signum() < 0 ? BigInteger.ZERO.toByteArray() : value.toByteArray();
+        byte[] raw = value.toByteArray();
+        if (raw.length == 32) {
+            return raw;
+        }
+        byte[] out = new byte[32];
+        int copy = Math.min(raw.length, 32);
+        System.arraycopy(raw, raw.length - copy, out, 32 - copy, copy);
+        return out;
     }
 
     private static BigInteger bytesToBigInteger(byte[] data) {
         if (data == null || data.length == 0) {
             return BigInteger.ZERO;
         }
-        return new BigInteger(data);
+        return new BigInteger(1, data);
     }
 }
