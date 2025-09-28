@@ -2,6 +2,7 @@ package io.blockchain.core.storage;
 
 import io.blockchain.core.protocol.Block;
 
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -32,6 +33,9 @@ public interface ChainStore {
 
     /** Height for a given block hash if known. */
     Optional<Long> getHeight(byte[] blockHash);
+
+    /** Total accumulated work for the chain ending at this block hash if known. */
+    Optional<BigInteger> getTotalWork(byte[] blockHash);
 
     /** Number of blocks stored (debug/metrics). */
     long size();

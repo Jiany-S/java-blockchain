@@ -18,6 +18,7 @@ public final class ConsensusRules {
         boolean genesisParent = isZeroHash(parentHash);
 
         long parentHeight;
+        Block parentBlock = null;
         if (genesisParent) {
             parentHeight = -1L;
         } else {
@@ -26,6 +27,8 @@ public final class ConsensusRules {
                 throw new IllegalArgumentException("Unknown parent");
             }
             parentHeight = parentHeightOpt.get();
+            parentBlock = store.getBlock(parentHash)
+                    .orElseThrow(() -> new IllegalArgumentException("Parent block data missing"));
         }
 
         long expectedHeight = parentHeight + 1;
@@ -33,19 +36,27 @@ public final class ConsensusRules {
             throw new IllegalArgumentException("Bad block height: expected " + expectedHeight + ", got " + hdr.height());
         }
 
-        // 3) Merkle root must match
+        // 3) Timestamp must not go backwards relative to parent
+        if (parentBlock != null) {
+            long parentTs = parentBlock.header().timestamp();
+            if (hdr.timestamp() < parentTs) {
+                throw new IllegalArgumentException("Timestamp older than parent");
+            }
+        }
+
+        // 4) Merkle root must match
         byte[] computed = Merkle.rootOf(block.transactions().stream().map(tx -> tx.id()).toList());
         if (!Arrays.equals(hdr.merkleRoot(), computed)) {
             throw new IllegalArgumentException("Merkle mismatch");
         }
 
-        // 4) Difficulty check
+        // 5) Difficulty check
         ProofOfWork pow = new ProofOfWork();
         if (!pow.meetsTarget(hdr)) {
             throw new IllegalArgumentException("Proof-of-Work target not met");
         }
 
-        // 5) Timestamp sanity
+        // 6) Timestamp sanity (future bound)
         long now = System.currentTimeMillis();
         if (hdr.timestamp() > now + 60_000L) {
             throw new IllegalArgumentException("Timestamp too far in future");

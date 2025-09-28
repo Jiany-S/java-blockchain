@@ -72,10 +72,21 @@ The keep-alive mode starts a background scheduler that calls `node.tick()` once 
 
 ## Fork Handling
 
-Blocks are now accepted even when they do not extend the current head. The chain store persists parent/child relationships so alternative branches can be inspected. The fork choice is still "highest height wins"; more advanced fork logic can build on the new metadata.
+Blocks are now accepted even when they do not extend the current head. The chain store persists parent/child relationships so alternative branches can be inspected. Fork choice tracks cumulative work, preferring the heaviest branch; height only breaks ties, so richer fork-choice logic can build on the stored metadata.
 
 - `ChainStore#getChildren(parentHash)` returns the child hashes for a block.
 - The RocksDB-backed store maintains a dedicated column family for this lookup.
+- Fork choice now prefers the branch with the greatest cumulative work (based on the difficulty bits of each header); height only breaks ties.
+
+## Validation
+
+Consensus validation enforces several invariants before a block is persisted:
+
+- The parent hash must already exist in the local store (genesis links to the all-zero hash).
+- Heights increase monotonically (`height = parentHeight + 1`).
+- Timestamps never move backwards relative to the parent and may be at most 60s in the future compared to the local clock.
+- Merkle roots must match the transactions supplied in the block body.
+- Proof-of-Work targets are honoured for every header, and cumulative work is tracked per block to drive fork choice.
 
 ## P2P Heartbeats
 
@@ -100,7 +111,7 @@ The node logs periodic `announce` messages over P2P containing the current chain
 
 ## Continuous Integration & Releases
 
-- **build.yml** runs on every push and pull request to `main` across `{ubuntu, windows, macos} × {Java 17, Java 21}`. It caches Gradle, executes `:app:test jacocoTestReport`, and uploads both JUnit and JaCoCo reports. Mark each generated status check (e.g. `build (ubuntu-latest, Java 21)`) as required in your branch protection for `main`.
+- **build.yml** runs on every push and pull request to `main` across `{ubuntu, windows, macos} x {Java 17, Java 21}`. It caches Gradle, executes `:app:test jacocoTestReport`, and uploads both JUnit and JaCoCo reports. Mark each generated status check (e.g. `build (ubuntu-latest, Java 21)`) as required in your branch protection for `main`.
 - **release.yml** builds the shaded JAR (`java-blockchain-all.jar`) whenever a tag matching `v*` is pushed, uploads it as a workflow artifact, and attaches it to the GitHub release automatically.
 - **docker-build-push.yml** builds `docker/Dockerfile` and publishes `ghcr.io/jiany-s/java-blockchain:<tag>` (and `:latest`) for tagged releases. Ensure the repository has Packages permissions enabled for the default `GITHUB_TOKEN`.
 

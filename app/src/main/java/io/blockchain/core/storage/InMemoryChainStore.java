@@ -4,6 +4,9 @@ import io.blockchain.core.protocol.Block;
 import io.blockchain.core.protocol.BlockHeader;
 import io.blockchain.core.protocol.Hashes;
 
+import io.blockchain.core.consensus.ProofOfWork;
+
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -27,6 +30,9 @@ public final class InMemoryChainStore implements ChainStore {
     /** Map: blockHash -> height (from header) */
     private final Map<BytesKey, Long> heights = new HashMap<>();
 
+    /** Map: blockHash -> cumulative work */
+    private final Map<BytesKey, BigInteger> totalWork = new HashMap<>();
+
     /** Map: parentHash -> list of child hashes */
     private final Map<BytesKey, List<byte[]>> children = new HashMap<>();
 
@@ -44,8 +50,20 @@ public final class InMemoryChainStore implements ChainStore {
         blocks.put(key, block);
         heights.put(key, block.header().height());
 
+        BigInteger parentWork = BigInteger.ZERO;
+        byte[] parent = block.header().parentHash();
+        if (parent != null && parent.length == 32) {
+            BytesKey parentKey = new BytesKey(parent);
+            BigInteger known = totalWork.get(parentKey);
+            if (known != null) {
+                parentWork = known;
+            }
+        }
+        BigInteger blockWork = ProofOfWork.calculateBlockWork(block.header());
+        BigInteger cumulative = parentWork.add(blockWork);
+        totalWork.put(key, cumulative);
+
         if (!existing) {
-            byte[] parent = block.header().parentHash();
             if (parent != null) {
                 BytesKey parentKey = new BytesKey(parent);
                 List<byte[]> list = children.computeIfAbsent(parentKey, k -> new ArrayList<>());
@@ -62,15 +80,23 @@ public final class InMemoryChainStore implements ChainStore {
             }
         }
 
-        // naive head rule for now: highest height wins, ties keep existing
+        // Heaviest-chain rule: highest cumulative work wins; tie-breaker = greater height
         if (head == null) {
             head = h.clone();
             return;
         }
-        long currentHeadHeight = heights.getOrDefault(new BytesKey(head), -1L);
-        long newHeight = block.header().height();
-        if (newHeight > currentHeadHeight) {
+        BytesKey headKey = new BytesKey(head);
+        BigInteger currentWork = totalWork.getOrDefault(headKey, BigInteger.ZERO);
+        BigInteger newWork = cumulative;
+        int cmp = newWork.compareTo(currentWork);
+        if (cmp > 0) {
             head = h.clone();
+        } else if (cmp == 0) {
+            long currentHeadHeight = heights.getOrDefault(headKey, -1L);
+            long newHeight = block.header().height();
+            if (newHeight > currentHeadHeight) {
+                head = h.clone();
+            }
         }
     }
 
@@ -106,6 +132,13 @@ public final class InMemoryChainStore implements ChainStore {
         if (blockHash == null) return Optional.empty();
         Long h = heights.get(new BytesKey(blockHash));
         return Optional.ofNullable(h);
+    }
+
+    @Override
+    public synchronized Optional<BigInteger> getTotalWork(byte[] blockHash) {
+        if (blockHash == null) return Optional.empty();
+        BigInteger work = totalWork.get(new BytesKey(blockHash));
+        return Optional.ofNullable(work);
     }
 
     @Override

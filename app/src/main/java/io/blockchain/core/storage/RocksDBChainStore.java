@@ -1,10 +1,12 @@
 package io.blockchain.core.storage;
 
+import io.blockchain.core.consensus.ProofOfWork;
 import io.blockchain.core.protocol.Block;
 import io.blockchain.core.protocol.BlockHeader;
 import io.blockchain.core.protocol.Hashes;
 import org.rocksdb.*;
 
+import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -32,6 +34,7 @@ public final class RocksDBChainStore implements ChainStore, AutoCloseable {
     private final ColumnFamilyHandle cfHeights;
     private final ColumnFamilyHandle cfMeta;
     private final ColumnFamilyHandle cfChildren;
+    private final ColumnFamilyHandle cfWork;
 
     private final Options options;
     private final DBOptions dbOptions;
@@ -41,6 +44,7 @@ public final class RocksDBChainStore implements ChainStore, AutoCloseable {
                               ColumnFamilyHandle cfHeights,
                               ColumnFamilyHandle cfMeta,
                               ColumnFamilyHandle cfChildren,
+                              ColumnFamilyHandle cfWork,
                               Options options,
                               DBOptions dbOptions) {
         this.db = db;
@@ -48,6 +52,7 @@ public final class RocksDBChainStore implements ChainStore, AutoCloseable {
         this.cfHeights = cfHeights;
         this.cfMeta = cfMeta;
         this.cfChildren = cfChildren;
+        this.cfWork = cfWork;
         this.options = options;
         this.dbOptions = dbOptions;
     }
@@ -70,9 +75,10 @@ public final class RocksDBChainStore implements ChainStore, AutoCloseable {
             ColumnFamilyDescriptor cfHeightsDesc = new ColumnFamilyDescriptor("heights".getBytes());
             ColumnFamilyDescriptor cfMetaDesc    = new ColumnFamilyDescriptor("meta".getBytes());
             ColumnFamilyDescriptor cfChildrenDesc = new ColumnFamilyDescriptor("children".getBytes());
+            ColumnFamilyDescriptor cfWorkDesc = new ColumnFamilyDescriptor("work".getBytes());
 
             java.util.List<ColumnFamilyDescriptor> cfDescs = java.util.Arrays.asList(
-                    cfDefault, cfBlocksDesc, cfHeightsDesc, cfMetaDesc, cfChildrenDesc
+                    cfDefault, cfBlocksDesc, cfHeightsDesc, cfMetaDesc, cfChildrenDesc, cfWorkDesc
             );
             java.util.List<ColumnFamilyHandle> cfHandles = new java.util.ArrayList<>();
 
@@ -83,8 +89,9 @@ public final class RocksDBChainStore implements ChainStore, AutoCloseable {
             ColumnFamilyHandle cfHeights = cfHandles.get(2);
             ColumnFamilyHandle cfMeta = cfHandles.get(3);
             ColumnFamilyHandle cfChildren = cfHandles.get(4);
+            ColumnFamilyHandle cfWork = cfHandles.get(5);
 
-            return new RocksDBChainStore(db, cfBlocks, cfHeights, cfMeta, cfChildren, opts, dbOpts);
+            return new RocksDBChainStore(db, cfBlocks, cfHeights, cfMeta, cfChildren, cfWork, opts, dbOpts);
         } catch (RocksDBException e) {
             throw new RuntimeException("Failed to open RocksDB at " + dataDir, e);
         }
@@ -95,8 +102,9 @@ public final class RocksDBChainStore implements ChainStore, AutoCloseable {
     @Override
     public synchronized void putBlock(Block block) {
         if (block == null) return;
+        BlockHeader header = block.header();
         byte[] hash = blockHash(block); // 32 bytes
-        byte[] height = longToBytes(block.header().height());
+        byte[] height = longToBytes(header.height());
         byte[] body = block.serialize();
 
         try (WriteOptions wo = new WriteOptions().setSync(false)) {
@@ -105,22 +113,48 @@ public final class RocksDBChainStore implements ChainStore, AutoCloseable {
                 batch.put(cfBlocks, hash, body);
                 batch.put(cfHeights, hash, height);
 
-                byte[] parent = block.header().parentHash();
+                byte[] parent = header.parentHash();
                 if (parent != null) {
                     byte[] existingChildren = db.get(cfChildren, parent);
                     byte[] updated = appendChild(existingChildren, hash);
                     batch.put(cfChildren, parent, updated);
                 }
 
-                // naive head rule: highest height wins (tie keep current)
-                byte[] currentHead = db.get(cfMeta, "head".getBytes());
-                long currentHeadH = -1L;
-                if (currentHead != null) {
-                    byte[] hh = db.get(cfHeights, currentHead);
-                    if (hh != null) currentHeadH = bytesToLong(hh);
+                BigInteger parentWork = BigInteger.ZERO;
+                if (parent != null) {
+                    byte[] workBytes = db.get(cfWork, parent);
+                    if (workBytes != null) {
+                        parentWork = bytesToBigInteger(workBytes);
+                    }
                 }
-                long newH = block.header().height();
-                if (currentHead == null || newH > currentHeadH) {
+                BigInteger blockWork = ProofOfWork.calculateBlockWork(header);
+                BigInteger totalWork = parentWork.add(blockWork);
+                batch.put(cfWork, hash, bigIntegerToBytes(totalWork));
+
+                // heaviest-chain rule: highest cumulative work wins, tie-break by height
+                byte[] currentHead = db.get(cfMeta, "head".getBytes());
+                boolean updateHead = false;
+                if (currentHead == null) {
+                    updateHead = true;
+                } else {
+                    BigInteger currentWork = BigInteger.ZERO;
+                    byte[] currentWorkBytes = db.get(cfWork, currentHead);
+                    if (currentWorkBytes != null) {
+                        currentWork = bytesToBigInteger(currentWorkBytes);
+                    }
+                    int cmp = totalWork.compareTo(currentWork);
+                    if (cmp > 0) {
+                        updateHead = true;
+                    } else if (cmp == 0) {
+                        long currentHeadH = -1L;
+                        byte[] hh = db.get(cfHeights, currentHead);
+                        if (hh != null) currentHeadH = bytesToLong(hh);
+                        if (header.height() > currentHeadH) {
+                            updateHead = true;
+                        }
+                    }
+                }
+                if (updateHead) {
                     batch.put(cfMeta, "head".getBytes(), hash);
                 }
                 db.write(wo, batch);
@@ -182,6 +216,17 @@ public final class RocksDBChainStore implements ChainStore, AutoCloseable {
     }
 
     @Override
+    public synchronized Optional<BigInteger> getTotalWork(byte[] blockHash) {
+        if (blockHash == null) return Optional.empty();
+        try {
+            byte[] data = db.get(cfWork, blockHash);
+            return data == null ? Optional.empty() : Optional.of(bytesToBigInteger(data));
+        } catch (RocksDBException e) {
+            throw new RuntimeException("getTotalWork failed", e);
+        }
+    }
+
+    @Override
     public synchronized long size() {
         // Rough estimate: number of blocks = number of keys in "blocks" CF.
         // RocksJava doesn't expose a simple size; use property or an iterator.
@@ -199,6 +244,7 @@ public final class RocksDBChainStore implements ChainStore, AutoCloseable {
         try { if (cfHeights != null) cfHeights.close(); } catch (Exception ignored) {}
         try { if (cfMeta != null) cfMeta.close(); } catch (Exception ignored) {}
         try { if (cfChildren != null) cfChildren.close(); } catch (Exception ignored) {}
+        try { if (cfWork != null) cfWork.close(); } catch (Exception ignored) {}
         try { if (db != null) db.close(); } catch (Exception ignored) {}
         try { if (options != null) options.close(); } catch (Exception ignored) {}
         try { if (dbOptions != null) dbOptions.close(); } catch (Exception ignored) {}
@@ -266,5 +312,19 @@ public final class RocksDBChainStore implements ChainStore, AutoCloseable {
     private static long bytesToLong(byte[] a) {
         ByteBuffer b = ByteBuffer.wrap(a);
         return b.getLong();
+    }
+
+    private static byte[] bigIntegerToBytes(BigInteger value) {
+        if (value == null) {
+            return BigInteger.ZERO.toByteArray();
+        }
+        return value.signum() < 0 ? BigInteger.ZERO.toByteArray() : value.toByteArray();
+    }
+
+    private static BigInteger bytesToBigInteger(byte[] data) {
+        if (data == null || data.length == 0) {
+            return BigInteger.ZERO;
+        }
+        return new BigInteger(data);
     }
 }

@@ -4,6 +4,7 @@ import io.blockchain.core.protocol.Block;
 import io.blockchain.core.protocol.BlockHeader;
 import io.blockchain.core.protocol.Hashes;
 
+import java.math.BigInteger;
 import java.util.List;
 import java.util.Optional;
 
@@ -65,6 +66,21 @@ public final class ProofOfWork {
     }
 
     // ---------- helpers ----------
+
+    /**
+     * Work approximation for a block header using the configured difficulty bits.
+     * Higher difficulty yields exponentially more work.
+     */
+    public static BigInteger calculateBlockWork(BlockHeader header) {
+        if (header == null) {
+            return BigInteger.ZERO;
+        }
+        int requiredBits = toRequiredBits(header.difficultyOrSlot());
+        if (requiredBits <= 0) {
+            return BigInteger.ONE;
+        }
+        return BigInteger.ONE.shiftLeft(requiredBits);
+    }
 
     /** Clamp difficulty to a sane non-negative int. */
     private static int toRequiredBits(long difficultyOrSlot) {

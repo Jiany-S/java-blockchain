@@ -103,6 +103,11 @@ class BlockProducerStateTest {
         }
 
         @Override
+        public Optional<java.math.BigInteger> getTotalWork(byte[] blockHash) {
+            return Optional.empty();
+        }
+
+        @Override
         public long size() {
             return 0;
         }
