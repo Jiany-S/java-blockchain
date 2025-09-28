@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  packages: write  # needed for GHCR push
 
 jobs:
   publish-jar:
@@ -39,3 +40,28 @@ jobs:
           files: app/build/libs/*-all.jar
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-docker:
+    runs-on: ubuntu-latest
+    needs: publish-jar
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/jiany-s/java-blockchain:latest
+            ghcr.io/jiany-s/java-blockchain:${{ github.ref_name }}
