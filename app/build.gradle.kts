@@ -1,6 +1,9 @@
+import org.gradle.api.plugins.BasePlugin
+
 plugins {
     id("java")
     id("application")
+    id("jacoco")
 }
 
 repositories { mavenCentral() }
@@ -27,8 +30,40 @@ java {
     toolchain { languageVersion.set(JavaLanguageVersion.of(21)) }
 }
 
-tasks.test {
+tasks.withType<Test>().configureEach {
     useJUnitPlatform()
+    finalizedBy(tasks.jacocoTestReport)
+}
+
+jacoco {
+    toolVersion = "0.8.12"
+}
+
+tasks.jacocoTestReport {
+    dependsOn(tasks.test)
+    reports {
+        xml.required.set(true)
+        csv.required.set(false)
+        html.required.set(true)
+    }
+}
+
+tasks.register<Jar>("uberJar") {
+    group = BasePlugin.BUILD_GROUP
+    description = "Assembles an uber JAR containing all runtime dependencies."
+    archiveBaseName.set("java-blockchain")
+    archiveClassifier.set("all")
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    dependsOn(configurations.runtimeClasspath)
+    from(sourceSets.main.get().output)
+    from({
+        configurations.runtimeClasspath.get()
+            .filter { it.name.endsWith(".jar") }
+            .map { zipTree(it) }
+    })
+    manifest {
+        attributes["Main-Class"] = application.mainClass.get()
+    }
 }
 
 application {

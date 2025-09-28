@@ -51,6 +51,7 @@ To inspect the available CLI options:
 | `--rpc-bind=<host>` | Bind address for the RPC server |
 | `--rpc-port=<port>` | RPC port (default 9090) |
 | `--rpc-token=<token>` | Require Bearer or `X-API-Key` token for the RPC server |
+| `--unsafe-public` | Acknowledge public exposure and keep custom binds without tokens |
 | `--no-p2p` | Disable the Netty listener (enabled by default) |
 | `--p2p-port=<port>` | P2P port (default 9000) |
 | `--miner-address=<addr>` | Address credited with block rewards and transaction fees |
@@ -59,7 +60,7 @@ To inspect the available CLI options:
 Environment overrides:
 - `JAVA_CHAIN_DATA_DIR`, `JAVA_CHAIN_API_TOKEN`, `JAVA_CHAIN_RPC_TOKEN`, `JAVA_CHAIN_NODE_ID`
 - `JAVA_CHAIN_ENABLE_API`, `JAVA_CHAIN_ENABLE_RPC`, `JAVA_CHAIN_ENABLE_P2P`, `JAVA_CHAIN_P2P_PEERS`
-- `JAVA_CHAIN_MINER_ADDRESS`, `JAVA_CHAIN_BLOCK_REWARD_MINOR`, `JAVA_CHAIN_KEEP_ALIVE`
+- `JAVA_CHAIN_MINER_ADDRESS`, `JAVA_CHAIN_BLOCK_REWARD_MINOR`, `JAVA_CHAIN_KEEP_ALIVE`, `JAVA_CHAIN_UNSAFE_PUBLIC`
 
 ## Mining & Rewards
 
@@ -91,7 +92,17 @@ Both REST and RPC services support token-based authentication. Set a token via C
 - `Authorization: Bearer <token>` or
 - `X-API-Key: <token>`
 
-If no token is provided, the endpoint is public. In production deployments always provide a token (and bind to a private interface or behind a reverse proxy).
+If you enable the API or RPC services without supplying a token, the node prints a bright security warning and automatically forces the bind address to `127.0.0.1`. Pass `--unsafe-public` (or set `JAVA_CHAIN_UNSAFE_PUBLIC=true`) only when you explicitly want to expose the services on a public interface.
+
+In production deployments always provide a token (and keep the services behind a private interface or reverse proxy).
+
+The node logs periodic `announce` messages over P2P containing the current chain height so peers can detect lagging branches.
+
+## Continuous Integration & Releases
+
+- **build.yml** runs on every push and pull request to `main` across `{ubuntu, windows, macos} × {Java 17, Java 21}`. It caches Gradle, executes `:app:test jacocoTestReport`, and uploads both JUnit and JaCoCo reports. Mark each generated status check (e.g. `build (ubuntu-latest, Java 21)`) as required in your branch protection for `main`.
+- **release.yml** builds the shaded JAR (`java-blockchain-all.jar`) whenever a tag matching `v*` is pushed, uploads it as a workflow artifact, and attaches it to the GitHub release automatically.
+- **docker-build-push.yml** builds `docker/Dockerfile` and publishes `ghcr.io/jiany-s/java-blockchain:<tag>` (and `:latest`) for tagged releases. Ensure the repository has Packages permissions enabled for the default `GITHUB_TOKEN`.
 
 ## REST & RPC APIs
 

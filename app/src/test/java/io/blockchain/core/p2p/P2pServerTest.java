@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -46,6 +47,30 @@ class P2pServerTest {
 
         assertTrue(handshake.await(5, TimeUnit.SECONDS));
         assertTrue(messageLatch.await(5, TimeUnit.SECONDS));
+    }
+
+    @Test
+    void periodicSuppliersEmitFreshPayload() throws Exception {
+        int portA = freePort();
+        int portB = freePort();
+
+        AtomicInteger counter = new AtomicInteger();
+        CountDownLatch handshake = new CountDownLatch(2);
+        CountDownLatch messageLatch = new CountDownLatch(1);
+        RecordingListener listenerA = new RecordingListener(new CopyOnWriteArrayList<>(), handshake);
+        SupplierRecorder listenerB = new SupplierRecorder(handshake, messageLatch);
+
+        P2pServer serverA = createServer("node-A", portA, listenerA, 200L, 1_000L, true);
+        P2pServer serverB = createServer("node-B", portB, listenerB, 200L, 1_000L, true);
+        serverA.registerPeriodicSupplier(() -> new P2pMessage("announce", Map.of("height", counter.incrementAndGet())));
+
+        serverA.start();
+        serverB.start();
+        serverB.connect("127.0.0.1", portA);
+
+        assertTrue(handshake.await(5, TimeUnit.SECONDS));
+        assertTrue(messageLatch.await(5, TimeUnit.SECONDS));
+        assertTrue(listenerB.lastHeight() > 0);
     }
 
     @Test
@@ -163,6 +188,41 @@ class P2pServerTest {
             if ("announce".equals(message.type())) {
                 messageLatch.countDown();
             }
+        }
+    }
+
+    private static final class SupplierRecorder implements P2pServer.PeerListener {
+        private final CountDownLatch handshakeLatch;
+        private final CountDownLatch messageLatch;
+        private final AtomicInteger height = new AtomicInteger();
+
+        SupplierRecorder(CountDownLatch handshakeLatch, CountDownLatch messageLatch) {
+            this.handshakeLatch = handshakeLatch;
+            this.messageLatch = messageLatch;
+        }
+
+        @Override
+        public void onPeerConnected(P2pServer.Peer peer) {
+            handshakeLatch.countDown();
+        }
+
+        @Override
+        public void onPeerDisconnected(P2pServer.Peer peer) {
+        }
+
+        @Override
+        public void onMessage(P2pServer.Peer peer, P2pMessage message) {
+            if ("announce".equals(message.type())) {
+                Object h = message.payload().get("height");
+                if (h instanceof Number number) {
+                    height.set(number.intValue());
+                }
+                messageLatch.countDown();
+            }
+        }
+
+        int lastHeight() {
+            return height.get();
         }
     }
 

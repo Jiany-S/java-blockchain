@@ -37,6 +37,33 @@ public class Main {
     private static final Logger LOG = Logger.getLogger(Main.class.getName());
     private static final ObjectMapper JSON = new ObjectMapper();
 
+    private static void emitSecurityWarning(boolean warnApi, boolean warnRpc) {
+        boolean color = supportsAnsi();
+        String highlight = color ? "\u001B[33;1m" : "";
+        String reset = color ? "\u001B[0m" : "";
+        StringBuilder banner = new StringBuilder();
+        banner.append(highlight).append("================ SECURITY WARNING ================\n");
+        if (warnApi && warnRpc) {
+            banner.append("API and RPC tokens are unset. Services are restricted to localhost.");
+        } else if (warnApi) {
+            banner.append("API token is unset. REST API is restricted to localhost.");
+        } else if (warnRpc) {
+            banner.append("RPC token is unset. RPC server is restricted to localhost.");
+        }
+        banner.append("\nSpecify --api-token/--rpc-token or pass --unsafe-public to acknowledge the risk.");
+        banner.append("\n==================================================").append(reset);
+        System.err.println(banner);
+        LOG.warning(banner.toString().replace(highlight, "").replace(reset, ""));
+    }
+
+    private static boolean supportsAnsi() {
+        if (System.getenv("NO_COLOR") != null) {
+            return false;
+        }
+        String term = System.getenv("TERM");
+        return term != null && !term.equalsIgnoreCase("dumb");
+    }
+
     public static void main(String[] args) throws Exception {
         CliOptions options = CliOptions.parse(args);
         if (options.showHelp()) {
@@ -339,7 +366,8 @@ public class Main {
             String nodeId,
             List<String> p2pPeers,
             String minerAddress,
-            long blockRewardMinor
+            long blockRewardMinor,
+            boolean unsafePublic
     ) {
         static CliOptions parse(String[] args) {
             Path dataDir = envPath("JAVA_CHAIN_DATA_DIR", Path.of("./data/chain"));
@@ -360,6 +388,7 @@ public class Main {
             int p2pPort = envPort("JAVA_CHAIN_P2P_PORT", 9000);
             String nodeId = envOrDefault("JAVA_CHAIN_NODE_ID", null);
             List<String> p2pPeers = new ArrayList<>();
+            boolean unsafePublic = "true".equalsIgnoreCase(System.getenv("JAVA_CHAIN_UNSAFE_PUBLIC"));
             String peersEnv = System.getenv("JAVA_CHAIN_P2P_PEERS");
             if (peersEnv != null && !peersEnv.isBlank()) {
                 for (String endpoint : peersEnv.split(",")) {
@@ -403,6 +432,8 @@ public class Main {
                         demo = true;
                     } else if (arg.equals("--no-demo")) {
                         demo = false;
+                    } else if (arg.equals("--unsafe-public")) {
+                        unsafePublic = true;
                     } else if (arg.startsWith("--demo-duration-ms=")) {
                         try {
                             demoDurationMillis = parsePositiveLong(arg.substring("--demo-duration-ms=".length()), "--demo-duration-ms");
@@ -476,6 +507,20 @@ public class Main {
 
             keepAlive = keepAlive || enableApi || enableRpc || "true".equalsIgnoreCase(System.getenv("JAVA_CHAIN_KEEP_ALIVE"));
 
+            boolean warnApi = enableApi && (apiToken == null || apiToken.isBlank());
+            boolean warnRpc = enableRpc && (rpcToken == null || rpcToken.isBlank());
+            if ((warnApi || warnRpc) && !unsafePublic) {
+                if (warnApi && !isLoopback(apiBind)) {
+                    LOG.warning("REST API token missing; forcing bind to 127.0.0.1. Use --unsafe-public to keep the custom address.");
+                    apiBind = "127.0.0.1";
+                }
+                if (warnRpc && !isLoopback(rpcBind)) {
+                    LOG.warning("RPC token missing; forcing bind to 127.0.0.1. Use --unsafe-public to keep the custom address.");
+                    rpcBind = "127.0.0.1";
+                }
+                emitSecurityWarning(warnApi, warnRpc);
+            }
+
             if (nodeId != null && nodeId.isBlank()) {
                 nodeId = null;
             }
@@ -506,7 +551,8 @@ public class Main {
                     nodeId,
                     peers,
                     minerAddress,
-                    blockRewardMinor
+                    blockRewardMinor,
+                    unsafePublic
             );
         }
 
@@ -533,6 +579,7 @@ Options:
   --rpc-bind=<host>          Bind address for the RPC server
   --rpc-port=<port>          Port for the RPC server (default 9090)
   --rpc-token=<token>        Require Bearer/X-API-Key token for the RPC server
+  --unsafe-public            Allow API/RPC to bind publicly without auth tokens
   --no-p2p                   Disable the Netty P2P listener
   --p2p-port=<port>          Port for the P2P listener (default 9000)
   --p2p-peer=<host:port>     Add a bootstrap peer (repeatable)
@@ -551,6 +598,7 @@ Environment overrides:
   JAVA_CHAIN_NODE_ID         Override/generated node identifier
   JAVA_CHAIN_MINER_ADDRESS   Address credited with mining rewards
   JAVA_CHAIN_BLOCK_REWARD_MINOR Base block reward in minor units
+  JAVA_CHAIN_UNSAFE_PUBLIC   Set to "true" to allow external binds without tokens
   JAVA_CHAIN_KEEP_ALIVE      Set to "true" to force keep-alive mode
 """);
         }
@@ -595,6 +643,17 @@ Environment overrides:
             } catch (NumberFormatException e) {
                 throw new IllegalArgumentException("Invalid value for " + flag + ": " + value);
             }
+        }
+
+        private static boolean isLoopback(String host) {
+            if (host == null) {
+                return false;
+            }
+            String normalized = host.trim().toLowerCase();
+            return normalized.equals("127.0.0.1")
+                    || normalized.equals("localhost")
+                    || normalized.equals("::1")
+                    || normalized.equals("[::1]");
         }
     }
 }

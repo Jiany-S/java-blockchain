@@ -1,5 +1,6 @@
 package io.blockchain.core;
 
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
@@ -22,6 +23,7 @@ class MainCliOptionsTest {
         assertNull(options.nodeId());
         assertEquals(50L, options.blockRewardMinor());
         assertNull(options.minerAddress());
+        assertFalse(options.unsafePublic());
     }
 
     @Test
@@ -60,6 +62,26 @@ class MainCliOptionsTest {
         assertTrue(options.p2pPeers().contains("peer2:9001"));
         assertEquals("miner-address", options.minerAddress());
         assertEquals(75L, options.blockRewardMinor());
+        assertFalse(options.unsafePublic());
+    }
+
+    @Test
+    void enforcesLoopbackWhenTokensMissing() {
+        Assumptions.assumeTrue(System.getenv("JAVA_CHAIN_API_TOKEN") == null,
+                "Test requires JAVA_CHAIN_API_TOKEN to be unset");
+        Assumptions.assumeTrue(System.getenv("JAVA_CHAIN_RPC_TOKEN") == null,
+                "Test requires JAVA_CHAIN_RPC_TOKEN to be unset");
+        Main.CliOptions options = Main.CliOptions.parse(new String[] {
+                "--enable-api",
+                "--api-bind=0.0.0.0",
+                "--enable-rpc",
+                "--rpc-bind=0.0.0.0"
+        });
+        assertTrue(options.enableApi());
+        assertEquals("127.0.0.1", options.apiBind());
+        assertTrue(options.enableRpc());
+        assertEquals("127.0.0.1", options.rpcBind());
+        assertFalse(options.unsafePublic());
     }
 
     @Test
