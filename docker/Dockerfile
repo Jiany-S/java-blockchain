@@ -3,7 +3,8 @@
 FROM eclipse-temurin:21-jdk AS build
 WORKDIR /workspace
 RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
-COPY gradlew gradle/ gradle.properties settings.gradle.kts ./
+COPY gradlew gradle.properties settings.gradle.kts ./
+COPY gradle ./gradle
 COPY app/build.gradle.kts app/
 RUN ./gradlew --no-daemon dependencies
 COPY . .
