@@ -166,4 +166,4 @@ MIT License. See [LICENSE](LICENSE).
 
 ## Author
 
-Jiany Samara (Jiany-S)
+Jiany Samara (Jiany-S).
